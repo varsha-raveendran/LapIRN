@@ -68,6 +68,8 @@ def train_lvl1():
     print("Training lvl1...")
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+    #input: scaled to 1/4 
+    # args:in_channel, n_classes, start_channel
     model = Miccai2020_LDR_laplacian_unit_add_lvl1(2, 3, start_channel, is_train=True, imgshape=imgshape_4, range_flow=range_flow).to(device)
 
     loss_similarity = NCC(win=3)

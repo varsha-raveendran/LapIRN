@@ -8,6 +8,9 @@ from Functions import generate_grid_unit, generate_grid
 
 
 class Miccai2020_LDR_laplacian_unit_add_lvl1(nn.Module):
+    """
+    
+    """
     def __init__(self, in_channel, n_classes, start_channel, is_train=True, imgshape=(160, 192, 144), range_flow=0.4):
         super(Miccai2020_LDR_laplacian_unit_add_lvl1, self).__init__()
         self.in_channel = in_channel
@@ -97,17 +100,30 @@ class Miccai2020_LDR_laplacian_unit_add_lvl1(nn.Module):
     def forward(self, x, y):
 
         cat_input = torch.cat((x, y), 1)
-        cat_input = self.down_avg(cat_input)
+        cat_input = self.down_avg(cat_input) # Git: Both average pooling and trilinear interpolation can be used to resample the input. We prefer average pooling because we would like to remove/smooth the high-frequency components of the input, similar to the traditional Gaussian pyramid used in image registration. 
         cat_input_lvl1 = self.down_avg(cat_input)
-
+        #From Git: denotes the concatenated input x and y, and in BCHWD format, down_y denotes the downsampled input y and is in BCHWD format. cat_input_lvl1[:, 1:2, :, :, :] This operation selects the second element in C(Channel) dimension, which is the input y.
         down_y = cat_input_lvl1[:, 1:2, :, :, :]
 
+        #2 3x3 3D Conv layers
         fea_e0 = self.input_encoder_lvl1(cat_input_lvl1)
+        
+        # 3X3 conv3D
         e0 = self.down_conv(fea_e0)
+        
+        #5x Pre-activation block (1x1 conv3d (skip) + 2 conv3D)
         e0 = self.resblock_group_lvl1(e0)
+        
+        #ConvTranspose3d 2x2, s=2
         e0 = self.up(e0)
+        #Git: multiply by range_flow,This is inspired by ICNet. Basically, we want to restrict the maximum deformation potential of the network with the range_flow. Empirically, 0.4 is sufficient for most medical image registration applications.
+        #self.outputs: 2 3x3 conv3D
         output_disp_e0_v = self.output_lvl1(torch.cat([e0, fea_e0], dim=1)) * self.range_flow
+        
+        #return flow
         output_disp_e0 = self.diff_transform(output_disp_e0_v, self.grid_1)
+        
+        #wrap moving/x with predicted flow
         warpped_inputx_lvl1_out = self.transform(x, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_1)
 
 
