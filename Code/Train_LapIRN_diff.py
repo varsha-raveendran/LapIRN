@@ -126,6 +126,7 @@ def train_lvl1():
             loss_Jacobian = loss_Jdet(F_X_Y_norm, grid_4)
 
             # reg2 - use velocity
+            #Git: Because F_xy is the normalized velocity field, e.g., [-1, 1] * range_flow. We want to calculate the smoothness loss on the unnormalized velocity field. VoxelMorph also computes the smoothness loss based on the unnormalized displacement field/velocity field. You need to *2 when using the unnormalized velocity fields
             _, _, x, y, z = F_xy.shape
             F_xy[:, 0, :, :, :] = F_xy[:, 0, :, :, :] * (z-1)
             F_xy[:, 1, :, :, :] = F_xy[:, 1, :, :, :] * (y-1)
