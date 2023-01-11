@@ -3,6 +3,10 @@ import torch.utils.data as Data
 import nibabel as nib
 import torch
 import itertools
+import os
+import json
+import torch.nn.functional as F
+import sys
 
 
 def generate_grid(imgshape):
@@ -211,3 +215,71 @@ class Predict_dataset(Data.Dataset):
             output = {'fixed': fixed_img.float(), 'move': moved_img.float(),
                       'fixed_label': fixed_label.float(), 'move_label': moved_label.float(), 'index': index}
             return output
+
+
+# Ref: https://github.com/MDL-UzL/L2R/blob/main/examples/task_specific/NLST/Example_NLST.ipynb
+
+class NLST(torch.utils.data.Dataset):
+    def __init__(self, root_dir, masked=False, downsampled=False, train=True):
+        """
+        NLST_Dataset
+        Provides FIXED_IMG, MOVING_IMG, FIXED_KEYPOINTS, MOVING_KEYPOINTS
+        """
+        self.root_dir = root_dir
+        self.image_dir = os.path.join(root_dir,'imagesTr')
+        self.keypoint_dir = os.path.join(root_dir,'keypointsTr')
+        self.masked = masked
+        with open(os.path.join(root_dir,'NLST_dataset.json')) as f:
+            self.dataset_json = json.load(f)
+        self.shape = self.dataset_json['tensorImageShape']['0']
+        self.H, self.W, self.D = self.shape
+        self.downsampled = downsampled
+        self.train = train
+        if self.train :
+            self.type_data = 'training_paired_images'
+        
+        else:
+            self.type_data = 'registration_val'
+        
+    def __len__(self):
+        
+        if self.train:
+            return self.dataset_json['numPairedTraining']
+        else:
+            return len(self.dataset_json['registration_val'])
+
+    def get_shape(self):
+        if self.downsampled:
+            return [x//2 for x in self.shape]
+        else:
+            return self.shape
+    
+    def __getitem__(self, idx):
+        fix_path=os.path.join(self.root_dir,self.dataset_json[self.type_data][idx]['fixed'])
+        
+        mov_path=os.path.join(self.root_dir,self.dataset_json[self.type_data][idx]['moving'])
+    
+        fixed_img=torch.from_numpy(nib.load(fix_path).get_fdata()).float()
+        moving_img=torch.from_numpy(nib.load(mov_path).get_fdata()).float()
+        
+        fixed_mask=torch.from_numpy(nib.load(fix_path.replace('images', 'masks')).get_fdata()).float()
+        moving_mask=torch.from_numpy(nib.load(mov_path.replace('images', 'masks')).get_fdata()).float()
+        
+        # fixed_kp=torch.from_numpy(np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=','))
+        # moving_kp=torch.from_numpy(np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=','))
+        # fixed_kp=(fixed_kp.flip(-1)/torch.tensor(self.shape))*2-1
+        # moving_kp=(moving_kp.flip(-1)/torch.tensor(self.shape))*2-1
+
+        # if self.masked and not self.downsampled:
+        #     fixed_img=torch.from_numpy(nib.load(fix_path.replace('images', 'masks')).get_fdata())*fixed_img
+        #     moving_img=torch.from_numpy(nib.load(mov_path.replace('images', 'masks')).get_fdata())*moving_img
+        
+        # if self.downsampled:
+        #     fixed_img=F.interpolate(fixed_img.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='trilinear').squeeze()
+        #     moving_img=F.interpolate(moving_img.view(1,1,self.H,self.W,self.D), size=(self.H//2,self.W//2,self.D//2), mode='trilinear').squeeze()
+        #     if self.masked:
+        #         fixed_img*=F.interpolate(torch.from_numpy(nib.load(fix_path.replace('images', 'masks')).get_fdata()).view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='nearest').squeeze()
+        #         moving_img*=F.interpolate(torch.from_numpy(nib.load(mov_path.replace('images', 'masks')).get_fdata()).view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='nearest').squeeze()
+
+        
+        return fixed_img, moving_img, fixed_mask, moving_mask
