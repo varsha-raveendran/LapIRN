@@ -34,13 +34,13 @@ parser.add_argument("--antifold", type=float,
                     dest="antifold", default=0.,
                     help="Anti-fold loss: suggested range 0 to 1000")
 parser.add_argument("--smooth", type=float,
-                    dest="smooth", default=3.5,
+                    dest="smooth", default=4,
                     help="Gradient smooth loss: suggested range 0.1 to 10")
 parser.add_argument("--checkpoint", type=int,
                     dest="checkpoint", default=5000,
                     help="frequency of saving models")
 parser.add_argument("--start_channel", type=int,
-                    dest="start_channel", default=6,
+                    dest="start_channel", default=7,
                     help="number of start channels")
 parser.add_argument("--datapath", type=str,
                     dest="datapath",
