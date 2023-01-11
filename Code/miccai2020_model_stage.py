@@ -1135,7 +1135,7 @@ class DiffeomorphicTransform_unit(nn.Module):
             flow = flow + F.grid_sample(flow, grid, mode='bilinear', padding_mode="border", align_corners=True)
         return flow
 
-
+#self.transform function uses grid_sample to resample the image. Therefore, the output size of the grid_sample is depending on the size of the defined grid (deformation field + identity), but not depending on the size of input image. Therefore, it can accept images with all scales
 class SpatialTransform(nn.Module):
     def __init__(self):
         super(SpatialTransform, self).__init__()
