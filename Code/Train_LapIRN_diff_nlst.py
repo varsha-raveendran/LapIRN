@@ -13,7 +13,7 @@ import wandb
 
 from Functions import generate_grid, Dataset_epoch, transform_unit_flow_to_flow_cuda, NLST,\
     generate_grid_unit
-from miccai2020_model_stage import Miccai2020_LDR_laplacian_unit_add_lvl1, Miccai2020_LDR_laplacian_unit_add_lvl2, \
+from model_lvl1 import LapIRN_lvl1, Miccai2020_LDR_laplacian_unit_add_lvl2, \
     Miccai2020_LDR_laplacian_unit_add_lvl3, SpatialTransform_unit, SpatialTransformNearest_unit, smoothloss, \
     neg_Jdet_loss, NCC, multi_resolution_NCC
 
@@ -91,7 +91,7 @@ def train_lvl1():
     print("device:", device)
     #input: scaled to 1/4 
     # args:in_channel, n_classes, start_channel
-    model = Miccai2020_LDR_laplacian_unit_add_lvl1(2, 3, start_channel, is_train=True, imgshape=imgshape_4, range_flow=range_flow).to(device)
+    model = LapIRN_lvl1(2, 3, start_channel, is_train=True, imgshape=imgshape, range_flow=range_flow).to(device)
 
     loss_similarity = NCC(win=3)
     loss_smooth = smoothloss
@@ -103,8 +103,11 @@ def train_lvl1():
         param.requires_grad = False
         param.volatile = True
 
-    grid_4 = generate_grid(imgshape_4)
-    grid_4 = torch.from_numpy(np.reshape(grid_4, (1,) + grid_4.shape)).to(device).float()
+    # grid_4 = generate_grid(imgshape_4)
+    # grid_4 = torch.from_numpy(np.reshape(grid_4, (1,) + grid_4.shape)).to(device).float()
+    
+    grid = generate_grid(imgshape)
+    grid = torch.from_numpy(np.reshape(grid, (1,) + grid.shape)).to(device).float()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
@@ -141,14 +144,14 @@ def train_lvl1():
             Y = Y.to(device).float()
             
             # output_disp_e0, warpped_inputx_lvl1_out, down_y, output_disp_e0_v, e0
-            F_X_Y, X_Y, Y_4x, F_xy, _ = model(X.unsqueeze(dim=0), Y.unsqueeze(dim=0))
+            F_X_Y, X_Y, F_xy, _ = model(X.unsqueeze(dim=0), Y.unsqueeze(dim=0))
 
             # 3 level deep supervision NCC
-            loss_multiNCC = loss_similarity(X_Y, Y_4x)
+            loss_multiNCC = loss_similarity(X_Y, Y.unsqueeze(dim=0))
 
             F_X_Y_norm = transform_unit_flow_to_flow_cuda(F_X_Y.permute(0,2,3,4,1).clone())
 
-            loss_Jacobian = loss_Jdet(F_X_Y_norm, grid_4)
+            loss_Jacobian = loss_Jdet(F_X_Y_norm, grid)
 
             # reg2 - use velocity
             #Git: Because F_xy is the normalized velocity field, e.g., [-1, 1] * range_flow. We want to calculate the smoothness loss on the unnormalized velocity field. VoxelMorph also computes the smoothness loss based on the unnormalized displacement field/velocity field. You need to *2 when using the unnormalized velocity fields
@@ -195,9 +198,9 @@ def train_lvl2():
     model_lvl1 = Miccai2020_LDR_laplacian_unit_add_lvl1(2, 3, start_channel, is_train=True, imgshape=imgshape_4,
                                           range_flow=range_flow).to(device)
 
-    model_path = "../Model/Stage/LDR_NLST_NCC_unit_add_reg_35_stagelvl1_8.pth"
+    # model_path = "../Model/Stage/LDR_NLST_NCC_unit_add_reg_35_stagelvl1_8.pth"
     #print("../Model/Stage/" + model_name + "stagelvl1_?????.pth")
-    #model_path = sorted(glob.glob("/home/iml/varsha.raveendran/code/LapIRN/Model/Stage/" + model_name + "stagelvl1_?????.pth"))[-1]
+    model_path = sorted(glob.glob("/home/iml/varsha.raveendran/code/LapIRN/Model/Stage/" + model_name + "stagelvl1_?????.pth"))[-1]
     print("model_path" , model_path)
     model_lvl1.load_state_dict(torch.load(model_path))
     print("Loading weight for model_lvl1...", model_path)
@@ -311,8 +314,8 @@ def train_lvl3():
     model_lvl2 = Miccai2020_LDR_laplacian_unit_add_lvl2(2, 3, start_channel, is_train=True, imgshape=imgshape_2,
                                           range_flow=range_flow, model_lvl1=model_lvl1).to(device)
 
-    model_path = "../Model/Stage/LDR_NLST_NCC_unit_add_reg_35_stagelvl2_8.pth"
-    #model_path = sorted(glob.glob("../Model/Stage/" + model_name + "stagelvl2_?????.pth"))[-1]
+    # model_path = "../Model/Stage/LDR_NLST_NCC_unit_add_reg_35_stagelvl2_8.pth"
+    model_path = sorted(glob.glob("../Model/Stage/" + model_name + "stagelvl2_?????.pth"))[-1]
     model_lvl2.load_state_dict(torch.load(model_path))
     print("Loading weight for model_lvl2...", model_path)
 
@@ -435,6 +438,46 @@ def train_lvl3():
 
                         dice_score = dice(np.floor(X_Y_label), np.floor(Y_label))
                         dice_total.append(dice_score)
+                        
+                        test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
+
+                        table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
+                        #'displacement_magn', *list(metrics.keys())
+                        table_results = wandb.Table(columns = table_columns)
+                        fixed = Y.to('cpu').detach().numpy()
+                        fixed = fixed[0,:,115,:]
+                        moving = X.to('cpu').detach().numpy()
+                        moving = moving[0,:,115,:]
+                        warped = X_Y.to('cpu').detach().numpy()
+                        warped = warped[0,0,:,115,:]
+                        
+                        target_fixed = Y_label
+                        target_fixed = target_fixed[:,115,:]
+                        mask_fixed = wandb.Image(fixed, masks={
+                                    "predictions": {
+                                        "mask_data": target_fixed
+                                        
+                                    }
+                                    })
+                        warped_seg = X_Y_label
+                        warped_seg = X_Y_label[:,115,:]
+
+                        mask_warped = wandb.Image(warped, masks={
+                                    "predictions": {
+                                        "mask_data": warped_seg
+                                        
+                                    }
+                                    })
+
+                        target_moving = X_label.to('cpu').detach().numpy()
+                        target_moving = X_label[0,:,115,:]
+                        flow_x = F_X_Y[0,0,:,115,:].to('cpu').detach().numpy()
+                        flow_y = F_X_Y[0,0,:,115,:].to('cpu').detach().numpy()
+                        
+                        table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
+                        # Varsha
+                        test_data_at.add(table_results, "predictions")
+                        wandb.run.log_artifact(test_data_at) 
 
                 print("Dice mean: ", np.mean(dice_total))
                 wandb.log({"dice" : np.mean(dice_total)} )
@@ -467,5 +510,5 @@ with open(log_dir, "a") as log:
     log.write("Validation Dice log for " + model_name[0:-1] + ":\n")
 range_flow = 0.4
 train_lvl1()
-train_lvl2()
-train_lvl3()
+#train_lvl2()
+#train_lvl3()

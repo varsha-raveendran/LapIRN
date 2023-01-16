@@ -259,8 +259,8 @@ class NLST(torch.utils.data.Dataset):
         
         mov_path=os.path.join(self.root_dir,self.dataset_json[self.type_data][idx]['moving'])
     
-        fixed_img=torch.from_numpy(nib.load(fix_path).get_fdata()).float()
-        moving_img=torch.from_numpy(nib.load(mov_path).get_fdata()).float()
+        fixed_img=torch.from_numpy(imgnorm(nib.load(fix_path).get_fdata())).float()
+        moving_img=torch.from_numpy(imgnorm(nib.load(mov_path).get_fdata())).float()
         
         fixed_mask=torch.from_numpy(nib.load(fix_path.replace('images', 'masks')).get_fdata()).float()
         moving_mask=torch.from_numpy(nib.load(mov_path.replace('images', 'masks')).get_fdata()).float()
@@ -270,9 +270,9 @@ class NLST(torch.utils.data.Dataset):
         # fixed_kp=(fixed_kp.flip(-1)/torch.tensor(self.shape))*2-1
         # moving_kp=(moving_kp.flip(-1)/torch.tensor(self.shape))*2-1
 
-        # if self.masked and not self.downsampled:
-        #     fixed_img=torch.from_numpy(nib.load(fix_path.replace('images', 'masks')).get_fdata())*fixed_img
-        #     moving_img=torch.from_numpy(nib.load(mov_path.replace('images', 'masks')).get_fdata())*moving_img
+        if self.masked and not self.downsampled:
+            fixed_img=torch.from_numpy(nib.load(fix_path.replace('images', 'masks')).get_fdata())*fixed_img
+            moving_img=torch.from_numpy(nib.load(mov_path.replace('images', 'masks')).get_fdata())*moving_img
         
         # if self.downsampled:
         #     fixed_img=F.interpolate(fixed_img.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='trilinear').squeeze()
