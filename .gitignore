@@ -1,2 +1,5 @@
 *wandb*
 *pycache*
+Data/*
+Log*
+Model*
