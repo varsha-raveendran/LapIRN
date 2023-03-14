@@ -7,8 +7,8 @@ import numpy as np
 import torch
 import torch.utils.data as Data
 import torch.nn.functional as F
-
-
+from utils_l2r import *
+from surface_distance import *
 import wandb
 
 from Functions import generate_grid, Dataset_epoch, transform_unit_flow_to_flow_cuda, NLST,\
@@ -326,7 +326,7 @@ def train_lvl3():
     model = Miccai2020_LDR_laplacian_unit_add_lvl3(2, 3, start_channel, is_train=True, imgshape=imgshape,
                                           range_flow=range_flow, model_lvl2=model_lvl1).to(device)
 
-    loss_similarity = multi_resolution_NCC(win=7, scale=3)
+    loss_similarity = multi_resolution_NCC(win=5, scale=2)
 
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
@@ -421,6 +421,7 @@ def train_lvl3():
                                          shuffle=False, num_workers=2)                
 
                 dice_total = []
+                hd95_total = []
                 use_cuda = True
                 device = torch.device("cuda" if use_cuda else "cpu")
                 print("\nValidating...")
@@ -450,12 +451,14 @@ def train_lvl3():
                                     0, :, :, :]
                         Y_label = Y_label.unsqueeze(0).cpu().numpy()[0, 0, :, :, :]
 
-                        dice_score = dice(np.floor(X_Y_label), np.floor(Y_label))
+                        dice_score = compute_dice(Y_label,X_label, X_Y_label,[0,1])
+                        #dice_score = dice(np.floor(X_Y_label), np.floor(Y_label))
                         dice_total.append(dice_score)
+                        hd95 = compute_hd95(Y_label,X_label, X_Y_label,[0,1])
                         
                         test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
 
-                        table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
+                        table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice', 'HD95']
                         #'displacement_magn', *list(metrics.keys())
                         table_results = wandb.Table(columns = table_columns)
                         
@@ -491,13 +494,13 @@ def train_lvl3():
                         flow_x = F_X_Y[0,0,115,:,:].to('cpu').detach().numpy()
                         flow_y = F_X_Y[0,0,115,:,:].to('cpu').detach().numpy()
                         
-                        table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
+                        table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score[0], hd95[0])
                         # Varsha
                         test_data_at.add(table_results, "predictions")
                         wandb.run.log_artifact(test_data_at) 
 
                 print("Dice mean: ", np.mean(dice_total))
-                wandb.log({"dice" : np.mean(dice_total)} )
+                #wandb.log({"dice" : np.mean(dice_total)} )
                 
                 #add val losses to wandb
                 with open(log_dir, "a") as log:
@@ -528,7 +531,7 @@ with open(log_dir, "a") as log:
     log.write("Validation Dice log for " + model_name[0:-1] + ":\n")
 range_flow = 0.4
 
-train_lvl1()
+#train_lvl1()
 
 #train_lvl2()
 train_lvl3()

@@ -258,6 +258,7 @@ class Miccai2020_LDR_laplacian_unit_add_lvl2(nn.Module):
         warpped_inputx_lvl1_out = self.transform(x, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_1)
 
         if self.is_train is True:
+            
             return output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, e0
         else:
             return output_disp_e0
