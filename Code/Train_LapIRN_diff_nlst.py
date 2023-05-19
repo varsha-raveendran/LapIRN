@@ -11,10 +11,12 @@ import torch.nn.functional as F
 import nibabel as nib
 
 import wandb
-from GPUtil import showUtilization as gpu_usage
+# from GPUtil import showUtilization as gpu_usage
 from numba import cuda
 
-from Functions import generate_grid, Dataset_epoch, transform_unit_flow_to_flow_cuda, NLST,\
+from nlst import NLST
+
+from Functions import generate_grid, Dataset_epoch, transform_unit_flow_to_flow_cuda, \
     generate_grid_unit, imgnorm
 from miccai2020_model_stage import Miccai2020_LDR_laplacian_unit_add_lvl1, Miccai2020_LDR_laplacian_unit_add_lvl2, \
     Miccai2020_LDR_laplacian_unit_add_lvl3, SpatialTransform_unit, SpatialTransformNearest_unit, smoothloss, \
@@ -39,7 +41,7 @@ parser.add_argument("--antifold", type=float,
                     dest="antifold", default=0.,
                     help="Anti-fold loss: suggested range 0 to 1000")
 parser.add_argument("--smooth", type=float,
-                    dest="smooth", default=3.5,
+                    dest="smooth", default=0.1,
                     help="Gradient smooth loss: suggested range 0.1 to 10")
 parser.add_argument("--checkpoint", type=int,
                     dest="checkpoint", default=5000,
@@ -54,6 +56,14 @@ parser.add_argument("--datapath", type=str,
 parser.add_argument("--freeze_step", type=int,
                     dest="freeze_step", default=2000,
                     help="Number step for freezing the previous level")
+parser.add_argument("--logpath", type=str,
+                    dest="logpath",
+                    default='/PATH/TO/YOUR/DATA',
+                    help=" path for stpring logs")
+parser.add_argument("--modelpath", type=str,
+                    dest="modelpath",
+                    default='/PATH/TO/YOUR/DATA',
+                    help="path for checkpoints")
 opt = parser.parse_args()
 
 lr = opt.lr
@@ -73,18 +83,6 @@ model_name = "LDR_NLST_NCC_unit_add_reg_35_"
 wandb.login()
 wandb.init(project="lapirn_nlst", entity="varsha_r", reinit=True)
 
-def free_gpu_cache():
-    print("Initial GPU Usage")
-    gpu_usage()                             
-
-    torch.cuda.empty_cache()
-
-    cuda.select_device(0)
-    cuda.close()
-    cuda.select_device(0)
-
-    print("GPU Usage after emptying the cache")
-    gpu_usage()
 
 def dice(im1, atlas):
     unique_class = np.unique(atlas)
@@ -125,15 +123,21 @@ def train_lvl1():
     
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
-    model_dir = '../Model/Stage'
-
+    model_dir = opt.modelpath + "/Stage"
+    if not os.path.isdir(opt.modelpath):
+        os.mkdir(opt.modelpath)
+        
     if not os.path.isdir(model_dir):
         os.mkdir(model_dir)
 
     lossall = np.zeros((4, iteration_lvl1+1))
 
-    NLST_dataset=NLST(data_path, downsampled=False, masked=True)
-
+    # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
+    NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
+                                downsampled=False, 
+                                masked=True, is_norm=True)
+    
+    # overfit_set = torch.utils.data.Subset(NLST_dataset, [2])
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
                                          shuffle=True, num_workers=4)
     
@@ -150,15 +154,16 @@ def train_lvl1():
 
     while step <= iteration_lvl1:
         
+        epoch_total_loss = []
         for batch_idx, data in enumerate(training_generator):
 
-            X = data[0]
-            Y = data[1]
+            X = data['moving_img']
+            Y = data['fixed_img']
             X = X.to(device).float()
             Y = Y.to(device).float()
             
             # output_disp_e0, warpped_inputx_lvl1_out, down_y, output_disp_e0_v, e0
-            F_X_Y, X_Y, Y_4x, F_xy, _ = model(X.unsqueeze(dim=0), Y.unsqueeze(dim=0))
+            F_X_Y, X_Y, Y_4x, F_xy, _ = model(X, Y)
 
             # 3 level deep supervision NCC
             loss_multiNCC = loss_similarity(X_Y, Y_4x)
@@ -168,7 +173,10 @@ def train_lvl1():
             loss_Jacobian = loss_Jdet(F_X_Y_norm, grid_4)
 
             # reg2 - use velocity
-            #Git: Because F_xy is the normalized velocity field, e.g., [-1, 1] * range_flow. We want to calculate the smoothness loss on the unnormalized velocity field. VoxelMorph also computes the smoothness loss based on the unnormalized displacement field/velocity field. You need to *2 when using the unnormalized velocity fields
+            #Git: Because F_xy is the normalized velocity field, e.g., [-1, 1] * range_flow. 
+            # We want to calculate the smoothness loss on the unnormalized velocity field. 
+            # VoxelMorph also computes the smoothness loss based on the unnormalized displacement field/velocity field. 
+            # You need to *2 when using the unnormalized velocity fields
             _, _, x, y, z = F_xy.shape
             F_xy[:, 0, :, :, :] = F_xy[:, 0, :, :, :] * (z-1)
             F_xy[:, 1, :, :, :] = F_xy[:, 1, :, :, :] * (y-1)
@@ -188,6 +196,7 @@ def train_lvl1():
             sys.stdout.write(
                 "\r" + 'step "{0}" -> training loss "{1:.4f}" - sim_NCC "{2:4f}" - Jdet "{3:.10f}" -smo "{4:.4f}"'.format(
                     step, loss.item(), loss_multiNCC.item(), loss_Jacobian.item(), loss_regulation.item()))
+            epoch_total_loss.append(loss.detach().item())
             sys.stdout.flush()
             wandb.log({"lvl1_step" : step, "lvl1_train_loss": loss.item(), "lvl1_sim_NCC" : loss_multiNCC.item(), "lvl1_Jdet" : loss_Jacobian.item(), "lvl1_regulation_loss" : loss_regulation.item() })
 
@@ -201,6 +210,7 @@ def train_lvl1():
 
             if step > iteration_lvl1:
                 break
+        wandb.log({"lvl1/epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1})
         print("one epoch pass")
     np.save(model_dir + '/loss' + model_name + 'stagelvl1.npy', lossall)
 
@@ -214,7 +224,8 @@ def train_lvl2():
 
     # model_path = "../Model/Stage/LDR_NLST_NCC_unit_add_reg_35_stagelvl1_8.pth"
     #print("../Model/Stage/" + model_name + "stagelvl1_?????.pth")
-    model_path = sorted(glob.glob("/vol/pluto/users/raveendr/code/LapIRN/Model/Stage/" + model_name + "stagelvl1_?????.pth"))[-1]
+    #TODO change the nuber of question marks!
+    model_path = sorted(glob.glob(opt.modelpath + "/Stage/" + model_name + "stagelvl1_?????.pth"))[-1]
     print("model_path" , model_path)
     model_lvl1.load_state_dict(torch.load(model_path))
     print("Loading weight for model_lvl1...", model_path)
@@ -243,14 +254,16 @@ def train_lvl2():
     grid_2 = torch.from_numpy(np.reshape(grid_2, (1,) + grid_2.shape)).to(device).float()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    model_dir = '../Model/Stage'
+    model_dir = opt.modelpath + "/Stage"
 
     if not os.path.isdir(model_dir):
         os.mkdir(model_dir)
 
     lossall = np.zeros((4, iteration_lvl2 + 1))
-    NLST_dataset=NLST(data_path, downsampled=False, masked=True)
-
+    # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
+    NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
+                                downsampled=False, 
+                                masked=True, is_norm=True)
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
                                          shuffle=True, num_workers=2)
     
@@ -265,15 +278,16 @@ def train_lvl2():
         lossall[:, 0:3000] = temp_lossall[:, 0:3000]
 
     while step <= iteration_lvl2:
+        epoch_total_loss = []
         for batch_idx, data in enumerate(training_generator):
 
-            X = data[0]
-            Y = data[1]
+            X = data['moving_img']
+            Y = data['fixed_img']
             X = X.to(device).float()
             Y = Y.to(device).float()
 
             # output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, e0
-            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, _ = model(X.unsqueeze(dim=0), Y.unsqueeze(dim=0))
+            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, _ = model(X, Y)
 
             # 3 level deep supervision NCC
             loss_multiNCC = loss_similarity(X_Y, Y_4x)
@@ -301,6 +315,7 @@ def train_lvl2():
                 "\r" + 'step "{0}" -> training loss "{1:.4f}" - sim_NCC "{2:4f}" - Jdet "{3:.10f}" -smo "{4:.4f}"'.format(
                     step, loss.item(), loss_multiNCC.item(), loss_Jacobian.item(), loss_regulation.item()))
             sys.stdout.flush()
+            epoch_total_loss.append(loss.item())
             wandb.log({"lvl2_step" : step, "lvl2_train_loss": loss.item(), "lvl2_sim_NCC" : loss_multiNCC.item(), "lvl2_Jdet" : loss_Jacobian.item(), "lvl2_regulation_loss" : loss_regulation.item() })
             # with lr 1e-3 + with bias
             if (step % n_checkpoint == 0):
@@ -316,6 +331,7 @@ def train_lvl2():
             if step > iteration_lvl2:
                 break
         print("one epoch pass")
+        wandb.log({"lvl2/epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1})
     np.save(model_dir + '/loss' + model_name + 'stagelvl2.npy', lossall)
 
 
@@ -323,7 +339,7 @@ def train_lvl3():
     print("Training lvl3...")
     #free_gpu_cache()                           
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model_lvl1 = Miccai2020_LDR_laplacian_unit_add_lvl1(2, 3, start_channel, is_train=True, imgshape=imgshape_4,
                                                range_flow=range_flow).to(device)
@@ -331,7 +347,7 @@ def train_lvl3():
                                           range_flow=range_flow, model_lvl1=model_lvl1).to(device)
 
     # model_path = "../Model/Stage/LDR_NLST_NCC_unit_add_reg_35_stagelvl2_8.pth"
-    model_path = sorted(glob.glob("/vol/pluto/users/raveendr/code/LapIRN/Model/Stage/" + model_name + "stagelvl2_?????.pth"))[-1]
+    model_path = sorted(glob.glob(opt.modelpath + "/Stage/" + model_name + "stagelvl2_?????.pth"))[-1]
     model_lvl2.load_state_dict(torch.load(model_path))
     print("Loading weight for model_lvl2...", model_path)
 
@@ -359,17 +375,25 @@ def train_lvl3():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     # optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
-    model_dir = '../Model'
+    model_dir = opt.modelpath
 
     if not os.path.isdir(model_dir):
         os.mkdir(model_dir)
 
     lossall = np.zeros((4, iteration_lvl3 + 1))
-    NLST_dataset=NLST(data_path, downsampled=False, masked=True)
-    ts1 = torch.utils.data.Subset(NLST_dataset, [1])
+    NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
+                                downsampled=False, 
+                                masked=True, is_norm=True)
+    # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
+    # ts1 = torch.utils.data.Subset(NLST_dataset, [1])
     
-    training_generator = Data.DataLoader(ts1, batch_size=1,
+    training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
                                          shuffle=True, num_workers=0)
+    NLST_val_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
+                                downsampled=False, 
+                                masked=True,train=False, is_norm=True)
+    valid_generator = Data.DataLoader(NLST_val_dataset, batch_size=1,
+                                shuffle=False, num_workers=2) 
     grid_unit = generate_grid_unit(imgshape)
     grid_unit = torch.from_numpy(np.reshape(grid_unit, (1,) + grid_unit.shape)).cuda(device).float()
     # training_generator = Data.DataLoader(Dataset_epoch(names, norm=False), batch_size=1,
@@ -377,33 +401,34 @@ def train_lvl3():
     step = 0
     load_model = False
     if load_model is True:
-        model_path = "../Model/LDR_OASIS_NCC_unit_add_reg_3_anti_1_stagelvl3_10000.pth"
+        model_path = model_dir + "/LDR_OASIS_NCC_unit_add_reg_3_anti_1_stagelvl3_10000.pth"
         print("Loading weight: ", model_path)
         step = 10000
         model.load_state_dict(torch.load(model_path))
-        temp_lossall = np.load("../Model/lossLDR_OASIS_NCC_unit_add_reg_3_anti_1_stagelvl3_10000.npy")
+        temp_lossall = np.load(model_dir + "/lossLDR_OASIS_NCC_unit_add_reg_3_anti_1_stagelvl3_10000.npy")
         lossall[:, 0:10000] = temp_lossall[:, 0:10000]
     gc.collect()
     while step <= iteration_lvl3:
-        print(step)
+        epoch_total_loss = []
         for batch_idx, data in enumerate(training_generator):
-            fix_path = str(data[0][0])
-            mov_path = str(data[1][0])
+            # fix_path = str(data[0][0])
+            # mov_path = str(data[1][0])
             
-            fixed_img=torch.from_numpy(imgnorm(nib.load(fix_path).get_fdata())).float()
-            moving_img=torch.from_numpy(imgnorm(nib.load(mov_path).get_fdata())).float()
+            # fixed_img=torch.from_numpy(imgnorm(nib.load(fix_path).get_fdata())).float()
+            # moving_img=torch.from_numpy(imgnorm(nib.load(mov_path).get_fdata())).float()
             
-            X=torch.from_numpy(nib.load(str(data[2][0])).get_fdata())*fixed_img
-            Y=torch.from_numpy(nib.load(str(data[3][0])).get_fdata())*moving_img
+            # X=torch.from_numpy(nib.load(str(data[2][0])).get_fdata())*fixed_img
+            # Y=torch.from_numpy(nib.load(str(data[3][0])).get_fdata())*moving_img
 
-            # X = data[0]
-            # Y = data[1]
-            X = X.to(device).float().unsqueeze(dim=0)
-            Y = Y.to(device).float().unsqueeze(dim=0)
-            print(X.shape)
-            
+            # # X = data[0]
+            # # Y = data[1]
+            # X = X.to(device).float().unsqueeze(dim=0)
+            # Y = Y.to(device).float().unsqueeze(dim=0)
+            # print(X.shape)
+            X = data['moving_img'].to(device)
+            Y = data['fixed_img'].to(device)
             # output_disp_e0, warpped_inputx_lvl1_out, y, compose_field_e0_lvl2_compose, lvl1_v, compose_lvl2_v, e0
-            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _ = model(X.unsqueeze(dim=0), Y.unsqueeze(dim=0))
+            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _ = model(X, Y)
 
             # 3 level deep supervision NCC
             loss_multiNCC = loss_similarity(X_Y, Y_4x)
@@ -433,6 +458,7 @@ def train_lvl3():
                 "\r" + 'step "{0}" -> training loss "{1:.4f}" - sim_NCC "{2:4f}" - Jdet "{3:.10f}" -smo "{4:.4f}"'.format(
                     step, loss.item(), loss_multiNCC.item(), loss_Jacobian.item(), loss_regulation.item()))
             sys.stdout.flush()
+            epoch_total_loss.append(loss.item())
             wandb.log({"lvl3_step" : step, "lvl3_train_loss": loss.item(), "lvl3_sim_NCC" : loss_multiNCC.item(), "lvl3_Jdet" : loss_Jacobian.item(), "lvl3_regulation_loss" : loss_regulation.item() })
             # with lr 1e-3 + with bias
             if (step % n_checkpoint == 0):
@@ -441,29 +467,29 @@ def train_lvl3():
                 np.save(model_dir + '/loss' + model_name + "stagelvl3_" + str(step) + '.npy', lossall)
 
                 # Validation
-                NLST_val_dataset=NLST(data_path, downsampled=False, masked=False, train=False)
-
-                valid_generator = Data.DataLoader(NLST_val_dataset, batch_size=1,
-                                         shuffle=False, num_workers=2)                
+                # NLST_val_dataset=NLST(data_path, downsampled=False, masked=False, train=False)
+                              
                 
                 dice_total = []
                 use_cuda = True
-                device = torch.device("cuda:1" if use_cuda else "cpu")
+                device = torch.device("cuda" if use_cuda else "cpu")
                 print("\nValidating...")
                 for batch_idx, data in enumerate(valid_generator):
-                    X, Y, X_label, Y_label = data[0].to(device), data[1].to(device), data[2].to(
-                        device), data[3].to(device)
+                    X = data['moving_img'].to(device)
+                    Y = data['fixed_img'].to(device)
+                    X_label, Y_label =  data['moving_mask'].to(
+                        device), data['fixed_mask'].to(device)
                     #breakpoint()
-                    X = F.interpolate(X.unsqueeze(0), size=imgshape, mode='trilinear')
-                    Y = F.interpolate(Y.unsqueeze(0), size=imgshape, mode='trilinear')
+                    X = F.interpolate(X, size=imgshape, mode='trilinear')
+                    Y = F.interpolate(Y, size=imgshape, mode='trilinear')
 
                     with torch.no_grad():
                         F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _ = model(X, Y)
                         #breakpoint()
                         #F_X_Y = F.interpolate(F_X_Y, size=imgshape, mode='trilinear', align_corners=True)
-                        X_Y_label = transform_nearest(X_label.unsqueeze(0), F_X_Y.permute(0, 2, 3, 4, 1), grid_unit).cpu().numpy()[0,
+                        X_Y_label = transform_nearest(X_label, F_X_Y.permute(0, 2, 3, 4, 1), grid_unit).cpu().numpy()[0,
                                     0, :, :, :]
-                        Y_label = Y_label.unsqueeze(0).cpu().numpy()[0, 0, :, :, :]
+                        Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
 
                         dice_score = dice(np.floor(X_Y_label), np.floor(Y_label))
                         dice_total.append(dice_score)
@@ -523,6 +549,7 @@ def train_lvl3():
             if step > iteration_lvl3:
                 break
         print("one epoch pass")
+        wandb.log({"lvl3/epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1})
     np.save(model_dir + '/loss' + model_name + 'stagelvl3.npy', lossall)
 
 
@@ -530,14 +557,14 @@ imgshape = (224, 192, 224)
 imgshape_4 = (imgshape[0]/4, imgshape[1]/4, imgshape[2]/4)
 imgshape_2 = (imgshape[0]/2, imgshape[1]/2, imgshape[2]/2)
 # Create and initalize log file
-if not os.path.isdir("../Log_nlst"):
-    os.mkdir("../Log_nlst")
+if not os.path.isdir(opt.logpath):
+    os.mkdir(opt.logpath)
 
-log_dir = "../Log_nlst/" + model_name + ".txt"
+log_dir = opt.logpath + "/" + model_name + ".txt"
 
 with open(log_dir, "a") as log:
     log.write("Validation Dice log for " + model_name[0:-1] + ":\n")
 range_flow = 0.4
-#train_lvl1()
-#train_lvl2()
+train_lvl1()
+train_lvl2()
 train_lvl3()

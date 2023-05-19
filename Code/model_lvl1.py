@@ -360,6 +360,10 @@ class Miccai2020_LDR_laplacian_unit_add_lvl3(nn.Module):
 
     def forward(self, x, y):
         # output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, e0
+        
+        
+        # output_disp_e0, warpped_inputx_lvl1_out, down_y, output_disp_e0_v,  e0
+        # output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, e0
         #lvl2_disp, _, _, compose_lvl2_v, lvl1_v, lvl2_embedding = self.model_lvl2(x, y)
         lvl2_disp, _, _, compose_lvl2_v, lvl1_v = self.model_lvl2(x, y)
         lvl2_disp_up = self.up_tri(lvl2_disp)
