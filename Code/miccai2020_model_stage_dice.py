@@ -25,8 +25,12 @@ class Miccai2020_LDR_laplacian_unit_add_lvl1(nn.Module):
         self.grid_1 = generate_grid_unit(self.imgshape)
         self.grid_1 = torch.from_numpy(np.reshape(self.grid_1, (1,) + self.grid_1.shape)).cuda().float()
         
+        self.grid_unit = generate_grid_unit(self.imgshape)
+        self.grid_unit = torch.from_numpy(np.reshape(self.grid_unit, (1,) + self.grid_unit.shape)).cuda().float()
+
         self.diff_transform = DiffeomorphicTransform_unit(time_step=7).cuda()
         self.transform = SpatialTransform_unit().cuda()
+        self.transform_nearest = SpatialTransformNearest_unit().cuda()
         bias_opt = False
 
         self.input_encoder_lvl1 = self.input_feature_extract(self.in_channel, self.start_channel * 4, bias=bias_opt)
@@ -96,7 +100,7 @@ class Miccai2020_LDR_laplacian_unit_add_lvl1(nn.Module):
                 nn.Softsign())
         return layer
 
-    def forward(self, x, y):
+    def forward(self, x, y, X_label):
         
         cat_input = torch.cat((x, y), 1)
         cat_input = self.down_avg(cat_input) # Git: Both average pooling and trilinear interpolation can be used to resample the input. We prefer average pooling because we would like to remove/smooth the high-frequency components of the input, similar to the traditional Gaussian pyramid used in image registration. 
@@ -126,9 +130,10 @@ class Miccai2020_LDR_laplacian_unit_add_lvl1(nn.Module):
         #wrap moving/x with predicted flow
         warpped_inputx_lvl1_out = self.transform(x, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_1)
 
+        warped_seg = self.transform_nearest(X_label, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_unit)
         
         if self.is_train is True:
-            return output_disp_e0, warpped_inputx_lvl1_out, down_y, output_disp_e0_v, e0
+            return output_disp_e0, warpped_inputx_lvl1_out, down_y, output_disp_e0_v, warped_seg, e0
         else:
             return output_disp_e0
 
@@ -149,10 +154,13 @@ class Miccai2020_LDR_laplacian_unit_add_lvl2(nn.Module):
 
         self.grid_1 = generate_grid_unit(self.imgshape)
         self.grid_1 = torch.from_numpy(np.reshape(self.grid_1, (1,) + self.grid_1.shape)).cuda().float()
-       
+        self.grid_unit = generate_grid_unit(self.imgshape)
+        self.grid_unit = torch.from_numpy(np.reshape(self.grid_unit, (1,) + self.grid_unit.shape)).cuda().float()
+
         
         self.diff_transform = DiffeomorphicTransform_unit(time_step=7).cuda()
         self.transform = SpatialTransform_unit().cuda()
+        self.transform_nearest = SpatialTransformNearest_unit().cuda()
         bias_opt = False
 
         self.input_encoder_lvl1 = self.input_feature_extract(self.in_channel+3, self.start_channel * 4, bias=bias_opt)
@@ -227,9 +235,9 @@ class Miccai2020_LDR_laplacian_unit_add_lvl2(nn.Module):
                 nn.Softsign())
         return layer
 
-    def forward(self, x, y):
+    def forward(self, x, y, X_label):
         
-        lvl1_disp, _, _, lvl1_v, lvl1_embedding = self.model_lvl1(x, y)
+        lvl1_disp, _, _, lvl1_v, _, lvl1_embedding = self.model_lvl1(x, y, X_label)
         lvl1_disp_up = self.up_tri(lvl1_disp)
         lvl1_v_up = self.up_tri(lvl1_v)
 
@@ -252,9 +260,10 @@ class Miccai2020_LDR_laplacian_unit_add_lvl2(nn.Module):
         output_disp_e0 = self.diff_transform(compose_field_e0_lvl1v, self.grid_1)
         warpped_inputx_lvl1_out = self.transform(x, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_1)
         
+        warped_seg = self.transform_nearest(X_label, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_unit)
 
         if self.is_train is True:
-            return output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, e0
+            return output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, warped_seg, e0
         else:
             return output_disp_e0
 
@@ -276,9 +285,12 @@ class Miccai2020_LDR_laplacian_unit_add_lvl3(nn.Module):
 
         self.grid_1 = generate_grid_unit(self.imgshape)
         self.grid_1 = torch.from_numpy(np.reshape(self.grid_1, (1,) + self.grid_1.shape)).cuda().float()
-        
+        self.grid_unit = generate_grid_unit(self.imgshape)
+        self.grid_unit = torch.from_numpy(np.reshape(self.grid_unit, (1,) + self.grid_unit.shape)).cuda().float()
+
         self.diff_transform = DiffeomorphicTransform_unit(time_step=7).cuda()
         self.transform = SpatialTransform_unit().cuda()
+        self.transform_nearest = SpatialTransformNearest_unit().cuda()
         bias_opt = False
 
         self.input_encoder_lvl1 = self.input_feature_extract(self.in_channel+3, self.start_channel * 4, bias=bias_opt)
@@ -352,9 +364,9 @@ class Miccai2020_LDR_laplacian_unit_add_lvl3(nn.Module):
                 nn.Softsign())
         return layer
 
-    def forward(self, x, y):
+    def forward(self, x, y, X_label):
         # output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, warped_seg, e0
-        lvl2_disp, _, _, compose_lvl2_v, lvl1_v, lvl2_embedding = self.model_lvl2(x, y)
+        lvl2_disp, _, _, compose_lvl2_v, lvl1_v, _, lvl2_embedding = self.model_lvl2(x, y, X_label)
         lvl2_disp_up = self.up_tri(lvl2_disp)
         compose_lvl2_v_up = self.up_tri(compose_lvl2_v)
         warpped_x = self.transform(x, lvl2_disp_up.permute(0, 2, 3, 4, 1), self.grid_1)
@@ -380,8 +392,10 @@ class Miccai2020_LDR_laplacian_unit_add_lvl3(nn.Module):
 
         warpped_inputx_lvl1_out = self.transform(x, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_1)
         
+        warped_seg = self.transform_nearest(X_label, output_disp_e0.permute(0, 2, 3, 4, 1), self.grid_unit)
+        
         if self.is_train is True:
-            return output_disp_e0, warpped_inputx_lvl1_out, y, compose_field_e0_lvl2_compose, lvl1_v, compose_lvl2_v, e0
+            return output_disp_e0, warpped_inputx_lvl1_out, y, compose_field_e0_lvl2_compose, lvl1_v, compose_lvl2_v, warped_seg, e0
         else:
             return output_disp_e0
 
@@ -1192,9 +1206,12 @@ class Dice:
     """
     # y_true and y_pred are tensors of shape (batch_size,  nb_classes, *vol_shape)
     def loss(self, y_true, y_pred):
+        
         ndims = len(list(y_pred.size())) - 2
         vol_axes = list(range(2, ndims + 2))
+        
         top = 2 * (y_true * y_pred).sum(dim=vol_axes)
+        # breakpoint()
         bottom = torch.clamp((y_true + y_pred).sum(dim=vol_axes), min=1e-5)
         dice = torch.mean(top / bottom)
         return -dice

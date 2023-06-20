@@ -9,7 +9,6 @@ import torch
 import torch.utils.data as Data
 import torch.nn.functional as F
 import nibabel as nib
-from scipy.ndimage import map_coordinates
 
 import wandb
 # from GPUtil import showUtilization as gpu_usage
@@ -19,9 +18,9 @@ from nlst import NLST
 
 from Functions import generate_grid, Dataset_epoch, transform_unit_flow_to_flow_cuda, \
     generate_grid_unit, imgnorm
-from miccai2020_model_stage import Miccai2020_LDR_laplacian_unit_add_lvl1, Miccai2020_LDR_laplacian_unit_add_lvl2, \
+from miccai2020_model_stage_dice import Miccai2020_LDR_laplacian_unit_add_lvl1, Miccai2020_LDR_laplacian_unit_add_lvl2, \
     Miccai2020_LDR_laplacian_unit_add_lvl3, SpatialTransform_unit, SpatialTransformNearest_unit, smoothloss, \
-    neg_Jdet_loss, NCC, multi_resolution_NCC
+    neg_Jdet_loss, NCC, multi_resolution_NCC, Dice
 
 # os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -39,13 +38,13 @@ parser.add_argument("--iteration_lvl3", type=int,
                     dest="iteration_lvl3", default=60001,
                     help="number of lvl3 iterations")
 parser.add_argument("--antifold", type=float,
-                    dest="antifold", default=0.,
+                    dest="antifold", default=0.1,
                     help="Anti-fold loss: suggested range 0 to 1000")
 parser.add_argument("--smooth", type=float,
-                    dest="smooth", default=4.5,
+                    dest="smooth", default=0.1,
                     help="Gradient smooth loss: suggested range 0.1 to 10")
 parser.add_argument("--checkpoint", type=int,
-                    dest="checkpoint", default=200,
+                    dest="checkpoint", default=5000,
                     help="frequency of saving models")
 parser.add_argument("--start_channel", type=int,
                     dest="start_channel", default=7,
@@ -65,6 +64,8 @@ parser.add_argument("--modelpath", type=str,
                     dest="modelpath",
                     default='/PATH/TO/YOUR/DATA',
                     help="path for checkpoints")
+parser.add_argument("--with_mask", type=bool,
+                    dest="with_mask", default=False, help="Mask the inputs")
 opt = parser.parse_args()
 
 lr = opt.lr
@@ -81,11 +82,12 @@ iteration_lvl2 = opt.iteration_lvl2
 iteration_lvl3 = opt.iteration_lvl3
 
 model_name = "LDR_NLST_NCC_unit_add_reg_35_"
+masked = opt.with_mask
+
+
 wandb.login()
 wandb.init(project="lapirn_nlst", entity="varsha_r", reinit=True)
 
-def compute_tre(x, y, spacing=(1.5, 1.5, 1.5)):
-    return np.linalg.norm((x.numpy() - y.numpy()) * spacing, axis=1)
 
 def dice(im1, atlas):
     unique_class = np.unique(atlas)
@@ -113,9 +115,13 @@ def train_lvl1():
     loss_similarity = NCC(win=3)
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
+    dice_loss = Dice().loss
 
     transform = SpatialTransform_unit().to(device)
-
+    transform_nearest = SpatialTransformNearest_unit().to(device)
+    grid_unit = generate_grid_unit(imgshape_4)
+    grid_unit = torch.from_numpy(np.reshape(grid_unit, (1,) + grid_unit.shape)).cuda(device).float()
+    
     for param in transform.parameters():
         param.requires_grad = False
         param.volatile = True
@@ -136,9 +142,11 @@ def train_lvl1():
     lossall = np.zeros((4, iteration_lvl1+1))
 
     # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
+    
+    print("MAsked" , masked)
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
-                                downsampled=False, 
-                                masked=False, is_norm=True)
+                                downsampled=0, 
+                                masked=masked, is_norm=True)
     
     # overfit_set = torch.utils.data.Subset(NLST_dataset, [2])
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
@@ -162,18 +170,34 @@ def train_lvl1():
 
             X = data['moving_img']
             Y = data['fixed_img']
+            X_label = data['moving_mask'].to(device)
+            Y_label = data['fixed_mask'].to(device)
             X = X.to(device).float()
             Y = Y.to(device).float()
             
             # output_disp_e0, warpped_inputx_lvl1_out, down_y, output_disp_e0_v, e0
-            F_X_Y, X_Y, Y_4x, F_xy, _ = model(X, Y)
+            F_X_Y, X_Y, Y_4x, F_xy, warped_seg, _ = model(X, Y, X_label)          
+            
 
             # 3 level deep supervision NCC
             loss_multiNCC = loss_similarity(X_Y, Y_4x)
 
             F_X_Y_norm = transform_unit_flow_to_flow_cuda(F_X_Y.permute(0,2,3,4,1).clone())
 
-            loss_Jacobian = loss_Jdet(F_X_Y_norm, grid_4)
+            loss_Jacobian = loss_Jdet(F_X_Y_norm, grid_4)           
+            Y_label=F.interpolate(Y_label.view(1,1,224,192,224),size=(224//4, 192//4, 224//4),mode='nearest')
+            
+            # breakpoint()
+            val_outputs = torch.nn.functional.one_hot( warped_seg.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
+        
+            val_labels = torch.nn.functional.one_hot(Y_label.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)        
+            # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
+            
+            # X_Y_label = transform_nearest(X_label, F_X_Y.permute(0, 2, 3, 4, 1), grid_unit).cpu().numpy()[0,
+            #             0, :, :, :]
+            # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
+            
+            dice_score = dice_loss(val_outputs, val_labels)
 
             # reg2 - use velocity
             #Git: Because F_xy is the normalized velocity field, e.g., [-1, 1] * range_flow. 
@@ -186,7 +210,7 @@ def train_lvl1():
             F_xy[:, 2, :, :, :] = F_xy[:, 2, :, :, :] * (x-1)
             loss_regulation = loss_smooth(F_xy)
 
-            loss = loss_multiNCC + antifold*loss_Jacobian + smooth*loss_regulation
+            loss = loss_multiNCC + antifold*loss_Jacobian + smooth*loss_regulation + 2.0 * dice_score
             # loss = loss_multiNCC + smooth * loss_regulation
 
             optimizer.zero_grad()           # clear gradients for this training step
@@ -201,7 +225,7 @@ def train_lvl1():
                     step, loss.item(), loss_multiNCC.item(), loss_Jacobian.item(), loss_regulation.item()))
             epoch_total_loss.append(loss.detach().item())
             sys.stdout.flush()
-            wandb.log({"lvl1_step" : step, "lvl1_train_loss": loss.item(), "lvl1_sim_NCC" : loss_multiNCC.item(), "lvl1_Jdet" : loss_Jacobian.item(), "lvl1_regulation_loss" : loss_regulation.item() })
+            wandb.log({"lvl1_step" : step, "lvl1_train_loss": loss.item(), "lvl1_sim_NCC" : loss_multiNCC.item(), "lvl1_Jdet" : loss_Jacobian.item(), "lvl1_regulation_loss" : loss_regulation.item(),"dice_loss" : dice_score.item()  })
 
             # with lr 1e-3 + with bias
             if (step % n_checkpoint == 0):
@@ -243,7 +267,7 @@ def train_lvl2():
     loss_similarity = multi_resolution_NCC(win=5, scale=2)
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
-
+    dice_loss = Dice().loss
     transform = SpatialTransform_unit().to(device)
 
     for param in transform.parameters():
@@ -264,9 +288,10 @@ def train_lvl2():
 
     lossall = np.zeros((4, iteration_lvl2 + 1))
     # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
+    print("MAsked" , masked)
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=False, 
-                                masked=False, is_norm=True)
+                                masked=masked, is_norm=True)
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
                                          shuffle=True, num_workers=2)
     
@@ -288,14 +313,29 @@ def train_lvl2():
             Y = data['fixed_img']
             X = X.to(device).float()
             Y = Y.to(device).float()
-
+            X_label = data['moving_mask'].to(device)
+            Y_label = data['fixed_mask'].to(device)
             # output_disp_e0, warpped_inputx_lvl1_out, y_down, compose_field_e0_lvl1v, lvl1_v, e0
-            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, _ = model(X, Y)
+            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, warped_seg, _ = model(X, Y, X_label)
 
             # 3 level deep supervision NCC
             loss_multiNCC = loss_similarity(X_Y, Y_4x)
 
             F_X_Y_norm = transform_unit_flow_to_flow_cuda(F_X_Y.permute(0,2,3,4,1).clone())
+            
+            Y_label=F.interpolate(Y_label.view(1,1,224,192,224),size=(224//2, 192//2, 224//2),mode='nearest')
+            
+            # breakpoint()
+            val_outputs = torch.nn.functional.one_hot( warped_seg.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
+        
+            val_labels = torch.nn.functional.one_hot(Y_label.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)        
+            # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
+            
+            # X_Y_label = transform_nearest(X_label, F_X_Y.permute(0, 2, 3, 4, 1), grid_unit).cpu().numpy()[0,
+            #             0, :, :, :]
+            # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
+            
+            dice_score = dice_loss(val_outputs, val_labels)
 
             loss_Jacobian = loss_Jdet(F_X_Y_norm, grid_2)
 
@@ -306,7 +346,7 @@ def train_lvl2():
             F_xy[:, 2, :, :, :] = F_xy[:, 2, :, :, :] * (x-1)
             loss_regulation = loss_smooth(F_xy)
 
-            loss = loss_multiNCC + antifold * loss_Jacobian + smooth * loss_regulation
+            loss = loss_multiNCC + antifold * loss_Jacobian + smooth * loss_regulation + 2.0 * dice_score
 
             optimizer.zero_grad()  # clear gradients for this training step
             loss.backward()  # backpropagation, compute gradients
@@ -319,7 +359,7 @@ def train_lvl2():
                     step, loss.item(), loss_multiNCC.item(), loss_Jacobian.item(), loss_regulation.item()))
             sys.stdout.flush()
             epoch_total_loss.append(loss.item())
-            wandb.log({"lvl2_step" : step, "lvl2_train_loss": loss.item(), "lvl2_sim_NCC" : loss_multiNCC.item(), "lvl2_Jdet" : loss_Jacobian.item(), "lvl2_regulation_loss" : loss_regulation.item() })
+            wandb.log({"lvl2_step" : step, "lvl2_train_loss": loss.item(), "lvl2_sim_NCC" : loss_multiNCC.item(), "lvl2_Jdet" : loss_Jacobian.item(), "lvl2_regulation_loss" : loss_regulation.item(), "dice_score": dice_score.item() })
             # with lr 1e-3 + with bias
             if (step % n_checkpoint == 0):
                 modelname = model_dir + '/' + model_name + "stagelvl2_" + str(step) + '.pth'
@@ -365,7 +405,7 @@ def train_lvl3():
 
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
-
+    dice_loss = Dice().loss
     transform = SpatialTransform_unit().to(device)
     transform_nearest = SpatialTransformNearest_unit().to(device)
 
@@ -384,16 +424,17 @@ def train_lvl3():
         os.mkdir(model_dir)
 
     lossall = np.zeros((4, iteration_lvl3 + 1))
+    print("MAsked" , masked)
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=False, 
-                                masked=True, is_norm=True)
+                                masked=masked, is_norm=True)
     # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
     # ts1 = torch.utils.data.Subset(NLST_dataset, [1])
     
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
                                          shuffle=True, num_workers=0)
     NLST_val_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
-                                downsampled=False, 
+                                downsampled=0, 
                                 masked=False,train=False, is_norm=True)
     valid_generator = Data.DataLoader(NLST_val_dataset, batch_size=1,
                                 shuffle=False, num_workers=2) 
@@ -414,16 +455,46 @@ def train_lvl3():
     while step <= iteration_lvl3:
         epoch_total_loss = []
         for batch_idx, data in enumerate(training_generator):
+            # fix_path = str(data[0][0])
+            # mov_path = str(data[1][0])
             
+            # fixed_img=torch.from_numpy(imgnorm(nib.load(fix_path).get_fdata())).float()
+            # moving_img=torch.from_numpy(imgnorm(nib.load(mov_path).get_fdata())).float()
+            
+            # X=torch.from_numpy(nib.load(str(data[2][0])).get_fdata())*fixed_img
+            # Y=torch.from_numpy(nib.load(str(data[3][0])).get_fdata())*moving_img
+
+            # # X = data[0]
+            # # Y = data[1]
+            # X = X.to(device).float().unsqueeze(dim=0)
+            # Y = Y.to(device).float().unsqueeze(dim=0)
+            # print(X.shape)
             X = data['moving_img'].to(device)
             Y = data['fixed_img'].to(device)
+            X_label = data['moving_mask'].to(device)
+            Y_label = data['fixed_mask'].to(device)
             # output_disp_e0, warpped_inputx_lvl1_out, y, compose_field_e0_lvl2_compose, lvl1_v, compose_lvl2_v, e0
-            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _ = model(X, Y)
+            F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, warped_seg, _ = model(X, Y, X_label)
 
             # 3 level deep supervision NCC
             loss_multiNCC = loss_similarity(X_Y, Y_4x)
 
             F_X_Y_norm = transform_unit_flow_to_flow_cuda(F_X_Y.permute(0,2,3,4,1).clone())
+            
+            #Y_label=F.interpolate(Y_label.view(1,1,224,192,224),size=(224, 192, 224),mode='nearest')
+            
+            #breakpoint()
+            
+            val_outputs = torch.nn.functional.one_hot( warped_seg.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
+        
+            val_labels = torch.nn.functional.one_hot(Y_label.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)        
+            # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
+            
+            # X_Y_label = transform_nearest(X_label, F_X_Y.permute(0, 2, 3, 4, 1), grid_unit).cpu().numpy()[0,
+            #             0, :, :, :]
+            # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
+            
+            dice_score = dice_loss(val_outputs, val_labels)
             with torch.no_grad():
                 torch.cuda.empty_cache()
 
@@ -435,8 +506,10 @@ def train_lvl3():
             F_xy[:, 1, :, :, :] = F_xy[:, 1, :, :, :] * (y-1)
             F_xy[:, 2, :, :, :] = F_xy[:, 2, :, :, :] * (x-1)
             loss_regulation = loss_smooth(F_xy)
-
-            loss = loss_multiNCC + antifold * loss_Jacobian + smooth * loss_regulation
+            
+            antifold = 0.
+            smooth = 0.001
+            loss = loss_multiNCC + antifold * loss_Jacobian + smooth * loss_regulation + 2.0 * dice_score
 
             optimizer.zero_grad()  # clear gradients for this training step
             loss.backward()  # backpropagation, compute gradients
@@ -449,7 +522,7 @@ def train_lvl3():
                     step, loss.item(), loss_multiNCC.item(), loss_Jacobian.item(), loss_regulation.item()))
             sys.stdout.flush()
             epoch_total_loss.append(loss.item())
-            wandb.log({"lvl3_step" : step, "lvl3_train_loss": loss.item(), "lvl3_sim_NCC" : loss_multiNCC.item(), "lvl3_Jdet" : loss_Jacobian.item(), "lvl3_regulation_loss" : loss_regulation.item() })
+            wandb.log({"lvl3_step" : step, "lvl3_train_loss": loss.item(), "lvl3_sim_NCC" : loss_multiNCC.item(), "lvl3_Jdet" : loss_Jacobian.item(), "lvl3_regulation_loss" : loss_regulation.item(), "dice_loss" : dice_score.item() })
             # with lr 1e-3 + with bias
             if (step % n_checkpoint == 0):
                 modelname = model_dir + '/' + model_name + "stagelvl3_" + str(step) + '.pth'
@@ -472,10 +545,9 @@ def train_lvl3():
                     #breakpoint()
                     X = F.interpolate(X, size=imgshape, mode='trilinear')
                     Y = F.interpolate(Y, size=imgshape, mode='trilinear')
-                    moving_keypoint = data["moving_kp"][0]
-                    fixed_keypoint = data["fixed_kp"][0]
+
                     with torch.no_grad():
-                        F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _ = model(X, Y)
+                        F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, warped_seg, _ = model(X, Y, X_label)
                         #breakpoint()
                         #F_X_Y = F.interpolate(F_X_Y, size=imgshape, mode='trilinear', align_corners=True) #why did I comment this out? Added again below now
                         F_X_Y = F.interpolate(F_X_Y, size=imgshape, mode='trilinear', align_corners=True)
@@ -489,26 +561,10 @@ def train_lvl3():
 
                         dice_score = dice(np.floor(X_Y_label), np.floor(Y_label))
                         dice_total.append(dice_score)
-                        F_X_Y_xyz = torch.zeros(F_X_Y.shape, dtype=F_X_Y.dtype, device=F_X_Y.device)
-                        _, _, x, y, z = F_X_Y.shape
-                        F_X_Y_xyz[0, 0] = F_X_Y[0, 2] * (x - 1) / 2
-                        F_X_Y_xyz[0, 1] = F_X_Y[0, 1] * (y - 1) / 2
-                        F_X_Y_xyz[0, 2] = F_X_Y[0, 0] * (z - 1) / 2
                         
-                        F_X_Y_xyz_cpu = F_X_Y_xyz.data.cpu().numpy()[0]                       
-                        
-                        
-                        fixed_disp_x = map_coordinates(F_X_Y_xyz_cpu[0], fixed_keypoint.numpy().transpose())
-                        fixed_disp_y = map_coordinates(F_X_Y_xyz_cpu[1], fixed_keypoint.numpy().transpose())
-                        fixed_disp_z = map_coordinates(F_X_Y_xyz_cpu[2], fixed_keypoint.numpy().transpose())
-                        lms_fixed_disp = np.array((fixed_disp_x, fixed_disp_y, fixed_disp_z)).transpose()
-                        
-                        warped_fixed_keypoint = fixed_keypoint + lms_fixed_disp
-                        
-                        tre_score = compute_tre(warped_fixed_keypoint, moving_keypoint).mean()
                         test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
 
-                        table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice', 'tre_score']
+                        table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
                         #'displacement_magn', *list(metrics.keys())
                         table_results = wandb.Table(columns = table_columns)
                         fixed = Y.to('cpu').detach().numpy()
@@ -541,7 +597,7 @@ def train_lvl3():
                         flow_x = F_X_Y[0,0,119,:,:].to('cpu').detach().numpy()
                         flow_y = F_X_Y[0,0,:,119,:].to('cpu').detach().numpy()
                         
-                        table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score,tre_score)
+                        table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
                         # Varsha
                         test_data_at.add(table_results, "predictions")
                         wandb.run.log_artifact(test_data_at) 

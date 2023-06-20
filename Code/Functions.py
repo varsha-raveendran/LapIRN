@@ -89,7 +89,9 @@ def save_img_nii(I_img, savename):
 
 def save_flow(I_img,savename,header=None,affine=None):
     if header is None or affine is None:
-        affine = np.diag([1, 1, 1, 1])
+        if affine is None:
+            print("affine is None")
+            affine = np.diag([1, 1, 1, 1])
         new_img = nib.nifti1.Nifti1Image(I_img, affine, header=None)
     else:
         new_img = nib.nifti1.Nifti1Image(I_img, affine, header=header)

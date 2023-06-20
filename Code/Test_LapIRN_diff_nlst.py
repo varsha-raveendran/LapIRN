@@ -4,12 +4,16 @@ from argparse import ArgumentParser
 import numpy as np
 import torch
 import torchio as tio
+import torch.nn.functional as F
 
+from nlst import NLST
 
-from Functions import generate_grid_unit, save_img, save_flow, transform_unit_flow_to_flow, load_4D, imgnorm, NLST
+from Functions import generate_grid_unit, save_img, save_flow, transform_unit_flow_to_flow, load_4D, imgnorm
 from miccai2020_model_stage import Miccai2020_LDR_laplacian_unit_add_lvl1, Miccai2020_LDR_laplacian_unit_add_lvl2, \
     Miccai2020_LDR_laplacian_unit_add_lvl3, SpatialTransform_unit
 from torch.utils.data import DataLoader
+from scipy.ndimage import map_coordinates
+
 parser = ArgumentParser()
 parser.add_argument("--modelpath", type=str,
                     dest="modelpath", default='../Model/LapIRN_diff_fea7.pth',
@@ -41,7 +45,8 @@ os.makedirs(out_path + "/" + "disp_field", exist_ok=True)
 
 start_channel = opt.start_channel
 
-
+def compute_tre(x, y, spacing=(1.5, 1.5, 1.5)):
+    return np.linalg.norm((x.numpy() - y.numpy()) * spacing, axis=1)
 
 def test():
     imgshape_4 = (224 / 4, 192 / 4, 224 / 4)
@@ -91,7 +96,7 @@ def test():
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=False, 
                                 masked=False,train=False,
-                            train_transform=True)
+                            is_norm=True)
 
     val_dataloader = DataLoader(NLST_dataset, batch_size=1, shuffle=False)
 
@@ -102,20 +107,44 @@ def test():
             input_fixed = batch["fixed_img"].to(device)
             
             input_moving = batch["moving_img"].to(device)
+            fixed_affine = batch["fixed_affine"][0]
+            moving_keypoint = batch["moving_kp"][0]
+            fixed_keypoint = batch["fixed_kp"][0]
             # predict
             F_X_Y = model(input_moving.to(device), input_fixed.to(device))
+            # F_X_Y = F.interpolate(F_X_Y, size=imgshape, mode='trilinear', align_corners=True)
+            # F_X_Y_clone = F_X_Y.clone()
             print(F_X_Y.shape)
             X_Y = transform(input_moving.to(device), F_X_Y.permute(0, 2, 3, 4, 1), grid).data.cpu().numpy()[0, 0, :, :, :] #grid sample
             # F_X_Y_cpu = F_X_Y.flip(1).data.cpu()[0, :, :, :, :]
-            F_X_Y_cpu = F_X_Y.data.cpu()[0, :, :, :, :]
-            print(F_X_Y_cpu.shape)
-            F_X_Y_cpu = transform_unit_flow_to_flow(F_X_Y_cpu.permute(1,2,3,0)) #unnorm
-            print(F_X_Y_cpu.shape)
-
+            
+            # # F_X_Y_cpu = F_X_Y_clone.data.cpu()
+            # print(F_X_Y_cpu.shape)
+            # F_X_Y_cpu = transform_unit_flow_to_flow(F_X_Y_cpu.permute(1,2,3,0)) #unnorm
+            F_X_Y_xyz = torch.zeros(F_X_Y.shape, dtype=F_X_Y.dtype, device=F_X_Y.device)
+            _, _, x, y, z = F_X_Y.shape
+            F_X_Y_xyz[0, 0] = F_X_Y[0, 2] * (x - 1) / 2
+            F_X_Y_xyz[0, 1] = F_X_Y[0, 1] * (y - 1) / 2
+            F_X_Y_xyz[0, 2] = F_X_Y[0, 0] * (z - 1) / 2
+            
+            F_X_Y_xyz_cpu = F_X_Y_xyz.data.cpu().numpy()[0]
+                       
+            
+            fixed_disp_x = map_coordinates(F_X_Y_xyz_cpu[0], fixed_keypoint.numpy().transpose())
+            fixed_disp_y = map_coordinates(F_X_Y_xyz_cpu[1], fixed_keypoint.numpy().transpose())
+            fixed_disp_z = map_coordinates(F_X_Y_xyz_cpu[2], fixed_keypoint.numpy().transpose())
+            lms_fixed_disp = np.array((fixed_disp_x, fixed_disp_y, fixed_disp_z)).transpose()
+            
+            warped_fixed_keypoint = fixed_keypoint + lms_fixed_disp
+            
+            tre_score = compute_tre(warped_fixed_keypoint, moving_keypoint).mean()
+            print(val1, val2, tre_score)
+            print(F_X_Y_xyz_cpu.shape)
+            # print(fixed_affine)
             moved_path = os.path.join(out_path + '/moved_imgs', f'moved_{str(val1).zfill(4)}_{str(val2).zfill(4)}.nii.gz')
             warped_path = os.path.join(out_path + '/disp_field', f'flow_{str(val1).zfill(4)}_{str(val2).zfill(4)}.nii.gz')
-            save_flow(F_X_Y_cpu.numpy().transpose(3,0,1,2), warped_path)
-            save_img(X_Y, moved_path)
+            save_flow(F_X_Y_xyz_cpu, warped_path)
+            save_img(X_Y, moved_path,affine=fixed_affine)
 
     print("Finished")
 
