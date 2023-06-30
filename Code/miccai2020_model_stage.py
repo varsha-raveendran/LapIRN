@@ -475,16 +475,18 @@ class Miccai2020_LDR_laplacian_unit_disp_add_lvl1(nn.Module):
     def forward(self, x, y):
 
         cat_input = torch.cat((x, y), 1)
-        cat_input = self.down_avg(cat_input)
-        cat_input_lvl1 = self.down_avg(cat_input)
+        cat_input = self.down_avg(cat_input) #torch.Size([1, 2, 56, 48, 56])
+        cat_input_lvl1 = self.down_avg(cat_input) #torch.Size([1, 2, 28, 24, 28])
 
         down_y = cat_input_lvl1[:, 1:2, :, :, :]
 
-        fea_e0 = self.input_encoder_lvl1(cat_input_lvl1)
+        fea_e0 = self.input_encoder_lvl1(cat_input_lvl1) #torch.Size([1, 28, 28, 24, 28])
+
         e0 = self.down_conv(fea_e0)
         e0 = self.resblock_group_lvl1(e0)
-        e0 = self.up(e0)
-        output_disp_e0_v = self.output_lvl1(torch.cat([e0, fea_e0], dim=1)) * self.range_flow
+        e0 = self.up(e0) #torch.Size([1, 28, 28, 24, 28])
+
+        output_disp_e0_v = self.output_lvl1(torch.cat([e0, fea_e0], dim=1)) * self.range_flow #torch.Size([1, 3, 28, 24, 28])
         warpped_inputx_lvl1_out = self.transform(x, output_disp_e0_v.permute(0, 2, 3, 4, 1), self.grid_1)
 
 
@@ -1149,7 +1151,10 @@ class DiffeomorphicTransform_unit(nn.Module):
         #del grid
         return flow
 
-#self.transform function uses grid_sample to resample the image. Therefore, the output size of the grid_sample is depending on the size of the defined grid (deformation field + identity), but not depending on the size of input image. Therefore, it can accept images with all scales
+#self.transform function uses grid_sample to resample the image. 
+# Therefore, the output size of the grid_sample is depending on the size of the defined grid 
+# (deformation field + identity), but not depending on the size of input image.
+# Therefore, it can accept images with all scales
 class SpatialTransform(nn.Module):
     def __init__(self):
         super(SpatialTransform, self).__init__()
@@ -1325,3 +1330,11 @@ class multi_resolution_NCC(torch.nn.Module):
             J = nn.functional.avg_pool3d(J, kernel_size=3, stride=2, padding=1, count_include_pad=False)
 
         return sum(total_NCC)
+
+class MSE:
+    """
+    Mean squared error loss.
+    """
+
+    def loss(self, y_true, y_pred):
+        return torch.mean((y_true - y_pred) ** 2)

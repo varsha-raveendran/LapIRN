@@ -24,7 +24,7 @@ def image_norm(img):
 
 class NLST(torch.utils.data.Dataset):
     def __init__(self, root_dir, json_conf='NLST_dataset.json', masked=False, 
-                 downsampled=0, train_transform = None, train=True, is_norm=False):
+                 downsampled=False, train_transform = None, train=True, is_norm=False):
        
         self.root_dir = root_dir
         self.image_dir = os.path.join(root_dir,'imagesTr')
@@ -52,10 +52,9 @@ class NLST(torch.utils.data.Dataset):
             return len(self.dataset_json['registration_val'])
 
     def get_shape(self):
-        if self.downsampled==2:
+        if self.downsampled:
             return [x//2 for x in self.shape]
-        elif self.downsampled==4:
-            return [x//4 for x in self.shape]
+       
         else:
             return self.shape
     
@@ -72,6 +71,9 @@ class NLST(torch.utils.data.Dataset):
         fixed_img = fixed_img.get_fdata()
         
         moving_img = nib.load(mov_path).get_fdata()
+        
+        fixed_img = np.clip(fixed_img, a_min=-1200, a_max=600)
+        moving_img = np.clip(moving_img, a_min=-1200, a_max=600)
         
         if self.is_norm:
             fixed_img = image_norm(fixed_img)
@@ -97,22 +99,22 @@ class NLST(torch.utils.data.Dataset):
             fixed_img = fixed_img * fixed_mask
             moving_img = moving_img * moving_mask
    
-        if self.downsampled==2:
-            # fixed_img=F.interpolate(fixed_img.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='trilinear').squeeze()
-            # moving_img=F.interpolate(moving_img.view(1,1,self.H,self.W,self.D), size=(self.H//2,self.W//2,self.D//2), mode='trilinear').squeeze()
+        if self.downsampled:
+            fixed_img=F.interpolate(fixed_img.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='trilinear').squeeze()
+            moving_img=F.interpolate(moving_img.view(1,1,self.H,self.W,self.D), size=(self.H//2,self.W//2,self.D//2), mode='trilinear').squeeze()
             fixed_mask=F.interpolate(fixed_mask.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='nearest').squeeze()
             moving_mask=F.interpolate(moving_mask.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='nearest').squeeze()
-        
-        if self.downsampled==4:
-            # fixed_img=F.interpolate(fixed_img.view(1,1,self.H,self.W,self.D),size=(self.H//4,self.W//4,self.D//4),mode='trilinear').squeeze()
-            # moving_img=F.interpolate(moving_img.view(1,1,self.H,self.W,self.D), size=(self.H//4,self.W//4,self.D//4), mode='trilinear').squeeze()
-            fixed_mask=F.interpolate(fixed_mask.view(1,1,self.H,self.W,self.D),size=(self.H//4,self.W//4,self.D//4),mode='nearest').squeeze()
-            moving_mask=F.interpolate(moving_mask.view(1,1,self.H,self.W,self.D),size=(self.H//4,self.W//4,self.D//4),mode='nearest').squeeze()
-        
-            
-        # if self.masked:
-        #     fixed_img = fixed_img * fixed_mask
-        #     moving_img = moving_img * moving_mask
+            if self.masked:
+                fixed_img = fixed_img * fixed_mask
+                moving_img = moving_img * moving_mask
+            if not self.train:
+                fixed_kp=torch.from_numpy(np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')) //2
+                moving_kp=torch.from_numpy(np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')) //2
+                fixed_kp=(fixed_kp.flip(-1)/torch.tensor(self.shape))*2-1
+                moving_kp=(moving_kp.flip(-1)/torch.tensor(self.shape))*2-1    
+                fixed_kp = fixed_kp.numpy()
+                moving_kp = moving_kp.numpy()
+  
             
         fixed_img = fixed_img.unsqueeze(0)
         moving_img = moving_img.unsqueeze(0)
