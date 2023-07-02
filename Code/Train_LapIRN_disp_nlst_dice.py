@@ -140,6 +140,13 @@ def train_lvl1():
 
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
                                          shuffle=True, num_workers=2)
+    
+    NLST_val_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
+                                downsampled=True, 
+                                masked=False,train=False, is_norm=True)
+    valid_generator = Data.DataLoader(NLST_val_dataset, batch_size=1,
+                                shuffle=False, num_workers=2) 
+    
     print("Length" ,len(training_generator.dataset))
     step = 0
     load_model = False
@@ -153,7 +160,8 @@ def train_lvl1():
 
     while step <= iteration_lvl1:
         epoch_total_loss = []
-        
+        val_epoch_total_loss = []
+        model.train()
         for batch_idx, data in enumerate(training_generator):
 
             X = data['moving_img']
@@ -209,10 +217,97 @@ def train_lvl1():
                 np.save(model_dir + '/loss' + model_name + "stagelvl1_" + str(step) + '.npy', lossall)
 
             step += 1
+            
+        print("\nValidating...")
+        model.eval()
+        
+        with torch.no_grad():
+            dice_total = []
+            for batch_idx, data in enumerate(valid_generator):
+                X = data['moving_img'].to(device)
+                Y = data['fixed_img'].to(device)
+                X_label, Y_label =  data['moving_mask'].to(
+                    device), data['fixed_mask'].to(device)
+                #breakpoint()
+                X = F.interpolate(X, size=imgshape, mode='trilinear')
+                Y = F.interpolate(Y, size=imgshape, mode='trilinear')
+               
+                # output_disp_e0, warpped_inputx_lvl1_out, down_y, output_disp_e0_v, e0
+                F_X_Y, X_Y, Y_4x, F_xy, _,  warped_seg = model(X, Y, X_label)
 
-            if step > iteration_lvl1:
-                break
-        wandb.log({"lvl1/epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1})
+                # 3 level deep supervision NCC
+                loss_multiNCC = loss_similarity(X_Y, Y_4x)
+
+                F_X_Y_norm = transform_unit_flow_to_flow_cuda(F_X_Y.permute(0,2,3,4,1).clone())
+
+                loss_Jacobian = loss_Jdet(F_X_Y_norm, grid_4)
+            
+                Y_label=F.interpolate(Y_label.view(1,1,imgshape[0],imgshape[1],imgshape[2]),size=(imgshape_4[0],imgshape_4[1],imgshape_4[2]),mode='nearest')
+                
+                # breakpoint()
+                val_outputs = torch.nn.functional.one_hot( warped_seg.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
+            
+                val_labels = torch.nn.functional.one_hot(Y_label.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
+                dice_score = dice_loss(val_outputs, val_labels)
+                # reg2 - use velocity
+                _, _, x, y, z = F_X_Y.shape
+                F_X_Y[:, 0, :, :, :] = F_X_Y[:, 0, :, :, :] * (z-1)
+                F_X_Y[:, 1, :, :, :] = F_X_Y[:, 1, :, :, :] * (y-1)
+                F_X_Y[:, 2, :, :, :] = F_X_Y[:, 2, :, :, :] * (x-1)
+                loss_regulation = loss_smooth(F_X_Y)
+
+                val_loss = loss_multiNCC + antifold*loss_Jacobian + smooth*loss_regulation + 1.0 * dice_score
+                # dice_score = dice(np.floor(warped_seg.cpu().numpy()), np.floor(Y_label.cpu().numpy()))
+                dice_total.append(val_loss.item())
+                epoch_total_loss.append(loss.item())
+                test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
+
+                table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
+                #'displacement_magn', *list(metrics.keys())
+                table_results = wandb.Table(columns = table_columns)
+                
+                fixed = Y_4x.to('cpu').detach().numpy()
+                fixed = fixed[0,0,:,12,:]
+                moving = X.to('cpu').detach().numpy()
+                moving = moving[0,0,:,48,:]
+                warped = X_Y.to('cpu').detach().numpy()
+                warped = warped[0,0,:,12,:]
+                
+                target_fixed = Y_label.cpu().numpy()[0, 0, :, :, :]
+                target_fixed = target_fixed[:,12,:]
+                mask_fixed = wandb.Image(fixed, masks={
+                            "predictions": {
+                                "mask_data": target_fixed
+                                
+                            }
+                            })
+                
+                warped_seg = warped_seg.to('cpu').detach().numpy()[0,0,:,12,:]
+
+                mask_warped = wandb.Image(warped, masks={
+                            "predictions": {
+                                "mask_data": warped_seg
+                                
+                            }
+                            })
+
+                # target_moving = X_label.to('cpu').detach().numpy()
+                # target_moving = X_label[0,:,119,:]
+                flow_x = F_X_Y[0,0,:,12,:].to('cpu').detach().numpy()
+                flow_y = F_X_Y[0,1,:,12,:].to('cpu').detach().numpy()
+                
+                table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
+                # Varsha
+                test_data_at.add(table_results, "predictions")
+                wandb.run.log_artifact(test_data_at) 
+
+            dice_mean = np.mean(dice_total)
+            print("Dice mean: ", dice_mean )
+            wandb.log({"dice" : dice_mean} )
+                
+        if step > iteration_lvl1:
+            break
+        wandb.log({"lvl1/train_epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1, "lvl1/val_epoch_loss": np.mean(val_epoch_total_loss)})
 
         print("one epoch pass")
     np.save(model_dir + '/loss' + model_name + 'stagelvl1.npy', lossall)
@@ -500,17 +595,21 @@ def train_lvl3():
                 moving_keypoint = data["moving_kp"][0]
                 fixed_keypoint = data["fixed_kp"][0]
                 
-                F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _ = model(X, Y)
+                F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _,warped_seg = model(X, Y, X_label)
                 #breakpoint()
                 #F_X_Y = F.interpolate(F_X_Y, size=imgshape, mode='trilinear', align_corners=True) #why did I comment this out? Added again below now
-                F_X_Y = F.interpolate(F_X_Y, size=imgshape, mode='trilinear', align_corners=True)
-                X_Y_label = transform_nearest(X_label, F_X_Y.permute(0, 2, 3, 4, 1), grid_unit).cpu().numpy()[0,
-                            0, :, :, :]
-                Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
                 
-
-                dice_score = dice(np.floor(X_Y_label), np.floor(Y_label))
-                dice_total.append(dice_score)
+                # F_X_Y = F.interpolate(F_X_Y, size=imgshape, mode='trilinear', align_corners=True)
+                # X_Y_label = transform_nearest(X_label, F_X_Y.permute(0, 2, 3, 4, 1), grid_unit).cpu().numpy()[0,
+                #             0, :, :, :]
+                # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
+                
+                val_outputs = torch.nn.functional.one_hot( warped_seg.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
+        
+                val_labels = torch.nn.functional.one_hot(Y_label.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3) 
+                dice_score = (-1) * dice_loss(val_outputs, val_labels)
+                # dice_score = dice(np.floor(warped_seg.cpu().numpy()), np.floor(Y_label.cpu().numpy()))
+                dice_total.append(dice_score.cpu().detach())
                 # F_X_Y_xyz = torch.zeros(F_X_Y.shape, dtype=F_X_Y.dtype, device=F_X_Y.device)
                 # # breakpoint()
                 # _, _, x, y, z = F_X_Y.shape
@@ -541,7 +640,7 @@ def train_lvl3():
                 warped = X_Y.to('cpu').detach().numpy()
                 warped = warped[0,0,:,48,:]
                 
-                target_fixed = Y_label
+                target_fixed = Y_label.cpu().numpy()[0, 0, :, :, :]
                 target_fixed = target_fixed[:,48,:]
                 mask_fixed = wandb.Image(fixed, masks={
                             "predictions": {
@@ -549,8 +648,8 @@ def train_lvl3():
                                 
                             }
                             })
-                warped_seg = X_Y_label
-                warped_seg = X_Y_label[:,48,:]
+                
+                warped_seg = warped_seg.to('cpu').detach().numpy()[0,0,:,48,:]
 
                 mask_warped = wandb.Image(warped, masks={
                             "predictions": {
@@ -569,8 +668,9 @@ def train_lvl3():
                 test_data_at.add(table_results, "predictions")
                 wandb.run.log_artifact(test_data_at) 
 
-            print("Dice mean: ", np.mean(dice_total))
-            wandb.log({"dice" : np.mean(dice_total)} )
+            dice_mean = np.mean(dice_total)
+            print("Dice mean: ", dice_mean )
+            wandb.log({"dice" : dice_mean} )
                 
         print("one epoch pass")
         wandb.log({"lvl3/epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1})
@@ -591,6 +691,6 @@ with open(log_dir, "a") as log:
     log.write("Validation Dice log for " + model_name[0:-1] + ":\n")
 
 range_flow = 0.4
-train_lvl1()
+# train_lvl1()
 train_lvl2()
-train_lvl3()
+# train_lvl3()
