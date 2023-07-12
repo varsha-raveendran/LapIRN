@@ -19,7 +19,7 @@ parser.add_argument("--savepath", type=str,
                     dest="savepath", default='../Result',
                     help="path for saving images")
 parser.add_argument("--start_channel", type=int,
-                    dest="start_channel", default=7,
+                    dest="start_channel", default=14,
                     help="number of start channels")
 
 opt = parser.parse_args()
@@ -63,7 +63,8 @@ def test():
     device = torch.device("cuda" if use_cuda else "cpu")
 
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
-                                downsampled=2, 
+                                downsampled=True
+                                , 
                                 masked=False,train=False,
                             is_norm=True)
     # overfit_set = torch.utils.data.Subset(NLST_dataset, [2] )
@@ -78,18 +79,19 @@ def test():
             input_fixed = batch["fixed_img"].to(device)
             
             input_moving = batch["moving_img"].to(device)
+            
             fixed_affine = batch["fixed_affine"][0]
             print(input_moving.shape)
             F_X_Y = model(input_moving.to(device), input_fixed.to(device))
             print(F_X_Y.shape)
+            F_X_Y = F.interpolate(F_X_Y, size=orig_imgshape, mode='trilinear', align_corners=True)
+            # F_X_Y = F.interpolate(F_X_Y, scale_factor=2, mode='trilinear', align_corners=True) #1. upsample
+            # print(F_X_Y.shape)
             
-            F_X_Y = F.interpolate(F_X_Y, scale_factor=2, mode='trilinear', align_corners=True) #1. upsample
-            print(F_X_Y.shape)
-            
-            X = F.interpolate(input_moving,scale_factor=2, mode='trilinear')
-            print(X.shape)
-            print(grid.shape)
-            X_Y = transform(X, F_X_Y.permute(0, 2, 3, 4, 1), grid).data.cpu().numpy()[0, 0, :, :, :] #warped img
+            # X = F.interpolate(input_moving,scale_factor=2, mode='trilinear')
+            # print(X.shape)
+            # print(grid.shape)
+            X_Y = transform(input_moving, F_X_Y.permute(0, 2, 3, 4, 1), grid).data.cpu().numpy()[0, 0, :, :, :] #warped img
             
             #2. unnorm and flip
             F_X_Y_xyz = torch.zeros(F_X_Y.shape, dtype=F_X_Y.dtype, device=F_X_Y.device)
@@ -99,11 +101,11 @@ def test():
             F_X_Y_xyz[0, 2] = F_X_Y[0, 0] * (z - 1) / 2
 
             # F_X_Y_clone = F_X_Y.clone()
-            print(F_X_Y.shape)                   
+                            
             
 
             F_X_Y_cpu = F_X_Y_xyz.data.cpu().numpy()[0, :, :, :, :].transpose(1, 2, 3, 0)
-  
+            print(F_X_Y_xyz.shape)   
             
             moved_path = os.path.join(out_path + '/moved_imgs', f'moved_{str(val1).zfill(4)}_{str(val2).zfill(4)}.nii.gz')
             warped_path = os.path.join(out_path + '/disp_field', f'flow_{str(val1).zfill(4)}_{str(val2).zfill(4)}.nii.gz')

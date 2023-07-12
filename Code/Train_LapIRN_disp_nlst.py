@@ -9,6 +9,7 @@ import torch.utils.data as Data
 import torch.nn.functional as F
 from scipy.ndimage import map_coordinates
 
+import monai
 import wandb
 from nlst import NLST
 
@@ -105,7 +106,11 @@ def train_lvl1():
     model = Miccai2020_LDR_laplacian_unit_disp_add_lvl1(2, 3, start_channel, is_train=True, imgshape=imgshape_4,
                                                         range_flow=range_flow).to(device)
 
-    loss_similarity = NCC(win=3)
+    # loss_similarity = NCC(win=3)
+    
+    loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
+    spatial_dims=3, kernel_size=3, kernel_type="rectangular", reduction="mean"
+    )
     
     # loss_similarity = MSE()
     loss_Jdet = neg_Jdet_loss
@@ -134,7 +139,7 @@ def train_lvl1():
 
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=True, 
-                                masked=False, is_norm=True)
+                                masked=True, is_norm=True)
     
     # overfit_set = torch.utils.data.Subset(NLST_dataset, [2] * 20)
 
@@ -228,7 +233,13 @@ def train_lvl2():
     model = Miccai2020_LDR_laplacian_unit_disp_add_lvl2(2, 3, start_channel, is_train=True, imgshape=imgshape_2,
                                           range_flow=range_flow, model_lvl1=model_lvl1).to(device)
 
-    loss_similarity = multi_resolution_NCC(win=5, scale=2)
+    # loss_similarity = multi_resolution_NCC(win=5, scale=2)
+    
+    loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
+    spatial_dims=3, kernel_size=5, kernel_type="rectangular", reduction="mean"
+    )
+    
+    loss_similarity = monai.losses.MultiScaleLoss(loss_similarity, scales=[0, 1])
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
 
@@ -257,7 +268,7 @@ def train_lvl2():
 
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=True, 
-                                masked=False, is_norm=True)
+                                masked=True, is_norm=True)
     # overfit_set = torch.utils.data.Subset(NLST_dataset, [2] * 20)
 
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
@@ -351,7 +362,13 @@ def train_lvl3():
     model = Miccai2020_LDR_laplacian_unit_disp_add_lvl3(2, 3, start_channel, is_train=True, imgshape=imgshape,
                                           range_flow=range_flow, model_lvl2=model_lvl2).to(device)
 
-    loss_similarity = multi_resolution_NCC(win=7, scale=3)
+    # loss_similarity = multi_resolution_NCC(win=7, scale=3)
+    
+    loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
+    spatial_dims=3, kernel_size=7, kernel_type="rectangular", reduction="mean"
+    )
+    
+    loss_similarity = monai.losses.MultiScaleLoss(loss_similarity, scales=[0, 1, 2])
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
 
@@ -379,7 +396,7 @@ def train_lvl3():
 
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=True, 
-                                masked=False, is_norm=True)
+                                masked=True, is_norm=True)
     # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
     # ts1 = torch.utils.data.Subset(NLST_dataset, [1])
     
@@ -472,8 +489,6 @@ def train_lvl3():
                 #breakpoint()
                 X = F.interpolate(X, size=imgshape, mode='trilinear')
                 Y = F.interpolate(Y, size=imgshape, mode='trilinear')
-                moving_keypoint = data["moving_kp"][0]
-                fixed_keypoint = data["fixed_kp"][0]
                 
                 F_X_Y, X_Y, Y_4x, F_xy, F_xy_lvl1, F_xy_lvl2, _ = model(X, Y)
                 #breakpoint()
@@ -504,45 +519,46 @@ def train_lvl3():
                 # warped_fixed_keypoint = fixed_keypoint + lms_fixed_disp
                 
                 # tre_score = compute_tre(warped_fixed_keypoint, moving_keypoint).mean()
-                test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
+                if step % 2000 == 0: 
+                    test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
 
-                table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
-                #'displacement_magn', *list(metrics.keys())
-                table_results = wandb.Table(columns = table_columns)
-                fixed = Y.to('cpu').detach().numpy()
-                fixed = fixed[0,0,:,48,:]
-                moving = X.to('cpu').detach().numpy()
-                moving = moving[0,0,:,48,:]
-                warped = X_Y.to('cpu').detach().numpy()
-                warped = warped[0,0,:,48,:]
-                
-                target_fixed = Y_label
-                target_fixed = target_fixed[:,48,:]
-                mask_fixed = wandb.Image(fixed, masks={
-                            "predictions": {
-                                "mask_data": target_fixed
-                                
-                            }
-                            })
-                warped_seg = X_Y_label
-                warped_seg = X_Y_label[:,48,:]
+                    table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
+                    #'displacement_magn', *list(metrics.keys())
+                    table_results = wandb.Table(columns = table_columns)
+                    fixed = Y.to('cpu').detach().numpy()
+                    fixed = fixed[0,0,:,48,:]
+                    moving = X.to('cpu').detach().numpy()
+                    moving = moving[0,0,:,48,:]
+                    warped = X_Y.to('cpu').detach().numpy()
+                    warped = warped[0,0,:,48,:]
+                    
+                    target_fixed = Y_label
+                    target_fixed = target_fixed[:,48,:]
+                    mask_fixed = wandb.Image(fixed, masks={
+                                "predictions": {
+                                    "mask_data": target_fixed
+                                    
+                                }
+                                })
+                    warped_seg = X_Y_label
+                    warped_seg = X_Y_label[:,48,:]
 
-                mask_warped = wandb.Image(warped, masks={
-                            "predictions": {
-                                "mask_data": warped_seg
-                                
-                            }
-                            })
+                    mask_warped = wandb.Image(warped, masks={
+                                "predictions": {
+                                    "mask_data": warped_seg
+                                    
+                                }
+                                })
 
-                # target_moving = X_label.to('cpu').detach().numpy()
-                # target_moving = X_label[0,:,119,:]
-                flow_x = F_X_Y[0,0,:,48,:].to('cpu').detach().numpy()
-                flow_y = F_X_Y[0,1,:,48,:].to('cpu').detach().numpy()
-                
-                table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
-                # Varsha
-                test_data_at.add(table_results, "predictions")
-                wandb.run.log_artifact(test_data_at) 
+                    # target_moving = X_label.to('cpu').detach().numpy()
+                    # target_moving = X_label[0,:,119,:]
+                    flow_x = F_X_Y[0,0,:,48,:].to('cpu').detach().numpy()
+                    flow_y = F_X_Y[0,1,:,48,:].to('cpu').detach().numpy()
+                    
+                    table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
+                    # Varsha
+                    test_data_at.add(table_results, "predictions")
+                    wandb.run.log_artifact(test_data_at) 
 
             print("Dice mean: ", np.mean(dice_total))
             wandb.log({"dice" : np.mean(dice_total)} )
