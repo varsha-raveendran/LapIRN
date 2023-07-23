@@ -419,7 +419,7 @@ class Miccai2020_LDR_laplacian_unit_disp_add_lvl1(nn.Module):
         self.grid_unit = torch.from_numpy(np.reshape(self.grid_unit, (1,) + self.grid_unit.shape)).cuda().float()
 
         self.transform = SpatialTransform_unit().cuda()
-        self.transform_nearest = SpatialTransformNearest_unit().cuda()
+        self.transform_seg = SpatialTransform_unit().cuda()
 
         bias_opt = False
 
@@ -504,7 +504,7 @@ class Miccai2020_LDR_laplacian_unit_disp_add_lvl1(nn.Module):
         e0 = self.up(e0)
         output_disp_e0_v = self.output_lvl1(torch.cat([e0, fea_e0], dim=1)) * self.range_flow
         warpped_inputx_lvl1_out = self.transform(x, output_disp_e0_v.permute(0, 2, 3, 4, 1), self.grid_1)
-        warped_seg = self.transform_nearest(X_label, output_disp_e0_v.permute(0, 2, 3, 4, 1), self.grid_unit)
+        warped_seg = self.transform_seg(X_label, output_disp_e0_v.permute(0, 2, 3, 4, 1), self.grid_unit)
 
 
         if self.is_train is True:
@@ -533,7 +533,7 @@ class Miccai2020_LDR_laplacian_unit_disp_add_lvl2(nn.Module):
         self.grid_unit = torch.from_numpy(np.reshape(self.grid_unit, (1,) + self.grid_unit.shape)).cuda().float()
 
         self.transform = SpatialTransform_unit().cuda()
-        self.transform_nearest = SpatialTransformNearest_unit().cuda()
+        self.transform_seg = SpatialTransform_unit().cuda()
 
         bias_opt = False
 
@@ -631,7 +631,7 @@ class Miccai2020_LDR_laplacian_unit_disp_add_lvl2(nn.Module):
         output_disp_e0_v = self.output_lvl1(torch.cat([e0, fea_e0], dim=1)) * self.range_flow
         compose_field_e0_lvl1 = lvl1_disp_up + output_disp_e0_v
         warpped_inputx_lvl1_out = self.transform(x, compose_field_e0_lvl1.permute(0, 2, 3, 4, 1), self.grid_1)
-        warped_seg = self.transform_nearest(X_label, compose_field_e0_lvl1.permute(0, 2, 3, 4, 1), self.grid_unit)
+        warped_seg = self.transform_seg(X_label, compose_field_e0_lvl1.permute(0, 2, 3, 4, 1), self.grid_unit)
 
         if self.is_train is True:
             return compose_field_e0_lvl1, warpped_inputx_lvl1_out, y_down, output_disp_e0_v, lvl1_v, e0, warped_seg
@@ -660,7 +660,7 @@ class Miccai2020_LDR_laplacian_unit_disp_add_lvl3(nn.Module):
         self.grid_unit = torch.from_numpy(np.reshape(self.grid_unit, (1,) + self.grid_unit.shape)).cuda().float()
 
         self.transform = SpatialTransform_unit().cuda()
-        self.transform_nearest = SpatialTransformNearest_unit().cuda()
+        self.transform_seg = SpatialTransform_unit().cuda()
 
         bias_opt = False
 
@@ -753,7 +753,7 @@ class Miccai2020_LDR_laplacian_unit_disp_add_lvl3(nn.Module):
         compose_field_e0_lvl1 = output_disp_e0_v + lvl2_disp_up
 
         warpped_inputx_lvl1_out = self.transform(x, compose_field_e0_lvl1.permute(0, 2, 3, 4, 1), self.grid_1)
-        warped_seg = self.transform_nearest(X_label, compose_field_e0_lvl1.permute(0, 2, 3, 4, 1), self.grid_unit)
+        warped_seg = self.transform_seg(X_label, compose_field_e0_lvl1.permute(0, 2, 3, 4, 1), self.grid_unit)
 
         if self.is_train is True:
             return compose_field_e0_lvl1, warpped_inputx_lvl1_out, y, output_disp_e0_v, lvl1_v, lvl2_v, e0, warped_seg
