@@ -88,12 +88,12 @@ class NLST(torch.utils.data.Dataset):
         fixed_kp =  0
         moving_kp = 0
         if not self.train:
-            fixed_kp=torch.from_numpy(np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=','))
-            moving_kp=torch.from_numpy(np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=','))
-            fixed_kp=(fixed_kp.flip(-1)/torch.tensor(self.shape))*2-1
-            moving_kp=(moving_kp.flip(-1)/torch.tensor(self.shape))*2-1    
-            fixed_kp = fixed_kp.numpy()
-            moving_kp = moving_kp.numpy()
+            # fixed_kp=torch.from_numpy(np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=','))
+            # moving_kp=torch.from_numpy(np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=','))
+            # fixed_kp=(fixed_kp.flip(-1)/torch.tensor(self.shape))*2-1
+            # moving_kp=(moving_kp.flip(-1)/torch.tensor(self.shape))*2-1    
+            fixed_kp=np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
+            moving_kp=np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
         
         if self.masked and not self.downsampled:           
             fixed_img = fixed_img * fixed_mask
@@ -108,12 +108,8 @@ class NLST(torch.utils.data.Dataset):
                 fixed_img = fixed_img * fixed_mask
                 moving_img = moving_img * moving_mask
             if not self.train:
-                fixed_kp=torch.from_numpy(np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')) //2
-                moving_kp=torch.from_numpy(np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')) //2
-                fixed_kp=(fixed_kp.flip(-1)/torch.tensor(self.shape))*2-1
-                moving_kp=(moving_kp.flip(-1)/torch.tensor(self.shape))*2-1    
-                fixed_kp = fixed_kp.numpy()
-                moving_kp = moving_kp.numpy()
+                fixed_kp=np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
+                moving_kp=np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
   
             
         fixed_img = fixed_img.unsqueeze(0)

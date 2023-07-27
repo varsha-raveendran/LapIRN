@@ -8,6 +8,7 @@ import torch
 import torch.utils.data as Data
 import torch.nn.functional as F
 from scipy.ndimage import map_coordinates
+# from monai.losses import DiceLoss, MultiScaleLoss
 
 import wandb
 from nlst import NLST
@@ -111,6 +112,9 @@ def train_lvl1():
     loss_Jdet = neg_Jdet_loss
     loss_smooth = smoothloss
     dice_loss = Dice().loss
+    # dice_loss = MultiScaleLoss(DiceLoss(include_background=False, to_onehot_y=False),
+    #                         scales=[0])
+
     transform = SpatialTransform_unit().to(device)
 
     for param in transform.parameters():
@@ -134,7 +138,7 @@ def train_lvl1():
 
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=True, 
-                                masked=True, is_norm=True)
+                                masked=False, is_norm=True)
     
     # overfit_set = torch.utils.data.Subset(NLST_dataset, [2] * 20)
 
@@ -325,7 +329,7 @@ def train_lvl2():
                                           range_flow=range_flow).to(device)
 
     # model_path = "../Model/Stage/LDR_LPBA_NCC_1_1_stagelvl1_1500.pth"
-    model_path = sorted(glob.glob(opt.modelpath + "/Stage/" + model_name + "stagelvl1_?????.pth"))[-1]
+    model_path = sorted(glob.glob(opt.modelpath + "/Stage/" + model_name + "stagelvl1_????.pth"))[-1]
     model_lvl1.load_state_dict(torch.load(model_path))
     print("Loading weight for model_lvl1...", model_path)
 
@@ -340,6 +344,8 @@ def train_lvl2():
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
     dice_loss = Dice().loss
+    # dice_loss = MultiScaleLoss(DiceLoss(include_background=False, to_onehot_y=False),
+    #                         scales=[0,1])
     transform = SpatialTransform_unit().to(device)
 
     for param in transform.parameters():
@@ -365,7 +371,7 @@ def train_lvl2():
 
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=True, 
-                                masked=True, is_norm=True)
+                                masked=False, is_norm=True)
     # overfit_set = torch.utils.data.Subset(NLST_dataset, [2] * 20)
 
     training_generator = Data.DataLoader(NLST_dataset, batch_size=1,
@@ -454,7 +460,7 @@ def train_lvl3():
     model_lvl2 = Miccai2020_LDR_laplacian_unit_disp_add_lvl2(2, 3, start_channel, is_train=True, imgshape=imgshape_2,
                                           range_flow=range_flow, model_lvl1=model_lvl1).to(device)
 
-    model_path = sorted(glob.glob(opt.modelpath + "/Stage/" + model_name + "stagelvl2_?????.pth"))[-1]
+    model_path = sorted(glob.glob(opt.modelpath + "/Stage/" + model_name + "stagelvl2_????.pth"))[-1]
     model_lvl2.load_state_dict(torch.load(model_path))
     print("Loading weight for model_lvl2...", model_path)
 
@@ -469,6 +475,8 @@ def train_lvl3():
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
     dice_loss = Dice().loss
+    # dice_loss = MultiScaleLoss(DiceLoss(include_background=False, to_onehot_y=False),
+                            # scales=[0,1,2])
     transform = SpatialTransform_unit().to(device)
     transform_nearest = SpatialTransformNearest_unit().to(device)
 
@@ -497,7 +505,7 @@ def train_lvl3():
 
     NLST_dataset = NLST("/home/varsha/data/NLST", 'NLST_dataset_train_test_v1.json',
                                 downsampled=True, 
-                                masked=True, is_norm=True)
+                                masked=False, is_norm=True)
     # NLST_dataset=NLST(data_path, downsampled=False, masked=True)
     # ts1 = torch.utils.data.Subset(NLST_dataset, [1])
     
@@ -524,6 +532,7 @@ def train_lvl3():
         temp_lossall = np.load("../Model/loss_LDR_LPBA_NCC_lap_share_preact_1_05_3000.npy")
         lossall[:, 0:3000] = temp_lossall[:, 0:3000]
 
+    best_mean_dice = 0
     while step <= iteration_lvl3:
         epoch_total_loss = []
         model.train()
@@ -611,10 +620,10 @@ def train_lvl3():
                 #             0, :, :, :]
                 # Y_label = Y_label.cpu().numpy()[0, 0, :, :, :]
                 
-                val_outputs = torch.nn.functional.one_hot( warped_seg.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
+                # val_outputs = torch.nn.functional.one_hot( warped_seg.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3)
         
-                val_labels = torch.nn.functional.one_hot(Y_label.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3) 
-                dice_score = (-1) * dice_loss(val_outputs, val_labels)
+                # val_labels = torch.nn.functional.one_hot(Y_label.squeeze(1).to(torch.int64), 2).permute(0,4,1,2,3) 
+                dice_score = (-1) * dice_loss(Y_label, warped_seg)
                 # dice_score = dice(np.floor(warped_seg.cpu().numpy()), np.floor(Y_label.cpu().numpy()))
                 dice_total.append(dice_score.cpu().detach())
                 # F_X_Y_xyz = torch.zeros(F_X_Y.shape, dtype=F_X_Y.dtype, device=F_X_Y.device)
@@ -678,6 +687,12 @@ def train_lvl3():
             dice_mean = np.mean(dice_total)
             print("Dice mean: ", dice_mean )
             wandb.log({"dice" : dice_mean} )
+            
+            if (best_mean_dice <= dice_mean):
+                best_mean_dice = dice_mean
+                modelname = model_dir + '/' + model_name + "stagelvl3_" + str(step) + '_best.pth'
+                torch.save(model.state_dict(), modelname)
+                np.save(model_dir + '/loss' + model_name + "stagelvl3_" + str(step) + '_best.npy', lossall)
                 
         print("one epoch pass")
         wandb.log({"lvl3/epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1})
@@ -698,6 +713,6 @@ with open(log_dir, "a") as log:
     log.write("Validation Dice log for " + model_name[0:-1] + ":\n")
 
 range_flow = 0.4
-#train_lvl1()
+# train_lvl1()
 train_lvl2()
 train_lvl3()

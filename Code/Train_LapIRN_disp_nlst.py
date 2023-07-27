@@ -106,11 +106,11 @@ def train_lvl1():
     model = Miccai2020_LDR_laplacian_unit_disp_add_lvl1(2, 3, start_channel, is_train=True, imgshape=imgshape_4,
                                                         range_flow=range_flow).to(device)
 
-    # loss_similarity = NCC(win=3)
+    loss_similarity = NCC(win=3)
     
-    loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
-    spatial_dims=3, kernel_size=3, kernel_type="rectangular", reduction="mean"
-    )
+    # loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
+    # spatial_dims=3, kernel_size=3, kernel_type="rectangular", reduction="mean"
+    # )
     
     # loss_similarity = MSE()
     loss_Jdet = neg_Jdet_loss
@@ -233,13 +233,13 @@ def train_lvl2():
     model = Miccai2020_LDR_laplacian_unit_disp_add_lvl2(2, 3, start_channel, is_train=True, imgshape=imgshape_2,
                                           range_flow=range_flow, model_lvl1=model_lvl1).to(device)
 
-    # loss_similarity = multi_resolution_NCC(win=5, scale=2)
+    loss_similarity = multi_resolution_NCC(win=5, scale=2)
     
-    loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
-    spatial_dims=3, kernel_size=5, kernel_type="rectangular", reduction="mean"
-    )
+    # loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
+    # spatial_dims=3, kernel_size=5, kernel_type="rectangular", reduction="mean"
+    # )
     
-    loss_similarity = monai.losses.MultiScaleLoss(loss_similarity, scales=[0, 1])
+    # loss_similarity = monai.losses.MultiScaleLoss(loss_similarity, scales=[0, 1])
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
 
@@ -362,13 +362,13 @@ def train_lvl3():
     model = Miccai2020_LDR_laplacian_unit_disp_add_lvl3(2, 3, start_channel, is_train=True, imgshape=imgshape,
                                           range_flow=range_flow, model_lvl2=model_lvl2).to(device)
 
-    # loss_similarity = multi_resolution_NCC(win=7, scale=3)
+    loss_similarity = multi_resolution_NCC(win=7, scale=3)
     
-    loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
-    spatial_dims=3, kernel_size=7, kernel_type="rectangular", reduction="mean"
-    )
+    # loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
+    # spatial_dims=3, kernel_size=7, kernel_type="rectangular", reduction="mean"
+    # )
     
-    loss_similarity = monai.losses.MultiScaleLoss(loss_similarity, scales=[0, 1, 2])
+    # loss_similarity = monai.losses.MultiScaleLoss(loss_similarity, scales=[0, 1, 2])
     loss_smooth = smoothloss
     loss_Jdet = neg_Jdet_loss
 
@@ -422,7 +422,7 @@ def train_lvl3():
         model.load_state_dict(torch.load(model_path))
         temp_lossall = np.load("../Model/loss_LDR_LPBA_NCC_lap_share_preact_1_05_3000.npy")
         lossall[:, 0:3000] = temp_lossall[:, 0:3000]
-
+    best_mean_dice = 0
     while step <= iteration_lvl3:
         epoch_total_loss = []
         for _, data in enumerate(training_generator):
@@ -481,6 +481,7 @@ def train_lvl3():
                 
         print("\nValidating...")
         with torch.no_grad():
+            
             for batch_idx, data in enumerate(valid_generator):
                 X = data['moving_img'].to(device)
                 Y = data['fixed_img'].to(device)
@@ -559,9 +560,16 @@ def train_lvl3():
                     # Varsha
                     test_data_at.add(table_results, "predictions")
                     wandb.run.log_artifact(test_data_at) 
-
+            dice_mean = np.mean(dice_total)
             print("Dice mean: ", np.mean(dice_total))
             wandb.log({"dice" : np.mean(dice_total)} )
+            
+            if (best_mean_dice <= dice_mean):
+                best_mean_dice = dice_mean
+                modelname = model_dir + '/' + model_name + "stagelvl3_" + str(step) + '_best.pth'
+                torch.save(model.state_dict(), modelname)
+                np.save(model_dir + '/loss' + model_name + "stagelvl3_" + str(step) + '_best.npy', lossall)
+                
                 
         print("one epoch pass")
         wandb.log({"lvl3/epoch_loss": np.mean(epoch_total_loss), 'epoch': step + 1})
