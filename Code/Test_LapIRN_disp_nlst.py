@@ -56,7 +56,7 @@ def test():
     model.eval()
     transform.eval()
 
-    grid = generate_grid_unit(imgshape)
+    grid = generate_grid_unit(orig_imgshape)
     grid = torch.from_numpy(np.reshape(grid, (1,) + grid.shape)).float()
 
     use_cuda = False
@@ -84,14 +84,14 @@ def test():
             print(input_moving.shape)
             F_X_Y = model(input_moving, input_fixed)
             print(F_X_Y.shape)
-            # F_X_Y = F.interpolate(F_X_Y, size=orig_imgshape, mode='trilinear', align_corners=True)
+            F_X_Y = F.interpolate(F_X_Y, size=orig_imgshape, mode='trilinear', align_corners=True)
             # F_X_Y = F.interpolate(F_X_Y, scale_factor=2, mode='trilinear', align_corners=True) #1. upsample
             # print(F_X_Y.shape)
             
             # X = F.interpolate(input_moving,scale_factor=2, mode='trilinear')
             # print(X.shape)
             # print(grid.shape)
-            X_Y = transform(input_moving, F_X_Y.permute(0, 2, 3, 4, 1), grid).data.cpu().numpy()[0, 0, :, :, :] #warped img
+            # X_Y = transform(input_moving, F_X_Y.permute(0, 2, 3, 4, 1), grid).data.cpu().numpy()[0, 0, :, :, :] #warped img
             
             #2. unnorm and flip
             F_X_Y_xyz = torch.zeros(F_X_Y.shape, dtype=F_X_Y.dtype, device=F_X_Y.device)
@@ -104,8 +104,8 @@ def test():
             # F_X_Y_cpu = F_X_Y_xyz.data.cpu().numpy()[0, :, :, :, :].transpose(1, 2, 3, 0)
             F_X_Y_xyz_cpu = F_X_Y_xyz.data.cpu().numpy()[0, :, :, :, :]
             print(F_X_Y_xyz_cpu.shape)   
-            moving_keypoint = batch['moving_kp'].squeeze(0).numpy() //2  
-            fixed_keypoint = batch['fixed_kp'].squeeze(0).numpy() //2
+            moving_keypoint = batch['moving_kp'].squeeze(0).numpy()  
+            fixed_keypoint = batch['fixed_kp'].squeeze(0).numpy() 
             print(fixed_keypoint.shape) 
             fixed_disp_x = map_coordinates(F_X_Y_xyz_cpu[0], fixed_keypoint.transpose())
             fixed_disp_y = map_coordinates(F_X_Y_xyz_cpu[1], fixed_keypoint.transpose())
@@ -117,8 +117,8 @@ def test():
                                     spacing=(1.5, 1.5, 1.5)).mean()
             print(tre_score)
             # moved_path = os.path.join(out_path + '/moved_imgs', f'moved_{str(val1).zfill(4)}_{str(val2).zfill(4)}.nii.gz')
-            # warped_path = os.path.join(out_path + '/disp_field', f'flow_{str(val1).zfill(4)}_{str(val2).zfill(4)}.nii.gz')
-            # save_flow(F_X_Y_xyz_cpu.transpose(1,2,3,0), warped_path,affine=fixed_affine)
+            warped_path = os.path.join(out_path + '/disp_field', f'flow_{str(val1).zfill(4)}_{str(val2).zfill(4)}.nii.gz')
+            save_flow(F_X_Y_xyz_cpu.transpose(1,2,3,0), warped_path,affine=fixed_affine)
             # save_img(X_Y, moved_path,affine=fixed_affine)
 
     print("Finished")

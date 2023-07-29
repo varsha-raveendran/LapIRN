@@ -1259,13 +1259,13 @@ class NCC(torch.nn.Module):
     """
     local (over window) normalized cross correlation
     """
-    def __init__(self, win=5, eps=1e-5):
+    def __init__(self, win=5, eps=1e-4):
         super(NCC, self).__init__()
         self.win = win
         self.eps = eps
         self.w_temp = win
 
-    def forward(self, I, J):
+    def forward(self, I, J, mask = None):
         ndims = 3
         win_size = self.w_temp
 
@@ -1302,9 +1302,14 @@ class NCC(torch.nn.Module):
         J_var = J2_sum - 2 * u_J * J_sum + u_J*u_J*win_size
 
         cc = cross * cross / (I_var * J_var + self.eps)
+        
+        if mask is None:
+            return -1.0 * torch.mean(cc)
+        else:
+            return -1.0 * (torch.sum(cc*mask)/torch.sum(mask))
 
-        # return negative cc.
-        return -1.0 * torch.mean(cc)
+        # # return negative cc.
+        # return -1.0 * torch.mean(cc)
 
 
 class multi_resolution_NCC(torch.nn.Module):
@@ -1319,11 +1324,11 @@ class multi_resolution_NCC(torch.nn.Module):
         for i in range(scale):
             self.similarity_metric.append(NCC(win=win - (i*2)))
 
-    def forward(self, I, J):
+    def forward(self, I, J, mask = None):
         total_NCC = []
 
         for i in range(self.num_scale):
-            current_NCC = self.similarity_metric[i](I, J)
+            current_NCC = self.similarity_metric[i](I, J, mask = mask)
             total_NCC.append(current_NCC/(2**i))
 
             I = nn.functional.avg_pool3d(I, kernel_size=3, stride=2, padding=1, count_include_pad=False)

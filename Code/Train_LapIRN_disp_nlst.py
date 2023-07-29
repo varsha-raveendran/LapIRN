@@ -78,7 +78,7 @@ iteration_lvl3 = opt.iteration_lvl3
 
 model_name = "LDR_NLST_NCC_unit_disp_add_reg_1_"
 wandb.login()
-wandb.init(project="lapirn_nlst", entity="varsha_r", reinit=True)
+wandb.init(project="lapirn_nlst", entity="varsha_r", reinit=True, config = opt)
 
 def compute_tre(x, y, spacing=(1.5, 1.5, 1.5)):
     return np.linalg.norm((x.numpy() - y.numpy()) * spacing, axis=1)
@@ -362,7 +362,8 @@ def train_lvl3():
     model = Miccai2020_LDR_laplacian_unit_disp_add_lvl3(2, 3, start_channel, is_train=True, imgshape=imgshape,
                                           range_flow=range_flow, model_lvl2=model_lvl2).to(device)
 
-    loss_similarity = multi_resolution_NCC(win=7, scale=3)
+    # loss_similarity = multi_resolution_NCC(win=7, scale=3)
+    loss_similarity = NCC(win=7)
     
     # loss_similarity = monai.losses.LocalNormalizedCrossCorrelationLoss(
     # spatial_dims=3, kernel_size=7, kernel_type="rectangular", reduction="mean"
@@ -463,9 +464,9 @@ def train_lvl3():
            
             # with lr 1e-3 + with bias
             if (step % n_checkpoint == 0):
-                modelname = model_dir + '/' + model_name + "stagelvl3_" + str(step) + '.pth'
+                modelname = model_dir + '/' + model_name + "dil10_stagelvl3_" + str(step) + '.pth'
                 torch.save(model.state_dict(), modelname)
-                np.save(model_dir + '/loss' + model_name + "stagelvl3_" + str(step) + '.npy', lossall)
+                np.save(model_dir + '/loss' + model_name + "dil10_stagelvl3_" + str(step) + '.npy', lossall)
 
                 # Validation
             
@@ -520,55 +521,55 @@ def train_lvl3():
                 # warped_fixed_keypoint = fixed_keypoint + lms_fixed_disp
                 
                 # tre_score = compute_tre(warped_fixed_keypoint, moving_keypoint).mean()
-                if step % 2000 == 0: 
-                    test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
+                # if step % 2000 == 0: 
+                test_data_at = wandb.Artifact("test_samples_" + str(wandb.run.id), type="predictions")            
 
-                    table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
-                    #'displacement_magn', *list(metrics.keys())
-                    table_results = wandb.Table(columns = table_columns)
-                    fixed = Y.to('cpu').detach().numpy()
-                    fixed = fixed[0,0,:,48,:]
-                    moving = X.to('cpu').detach().numpy()
-                    moving = moving[0,0,:,48,:]
-                    warped = X_Y.to('cpu').detach().numpy()
-                    warped = warped[0,0,:,48,:]
-                    
-                    target_fixed = Y_label
-                    target_fixed = target_fixed[:,48,:]
-                    mask_fixed = wandb.Image(fixed, masks={
-                                "predictions": {
-                                    "mask_data": target_fixed
-                                    
-                                }
-                                })
-                    warped_seg = X_Y_label
-                    warped_seg = X_Y_label[:,48,:]
+                table_columns = [ 'moving - source', 'fixed - target', 'warped', 'flow_x', 'flow_y', 'mask_warped', 'mask_fixed', 'dice']
+                #'displacement_magn', *list(metrics.keys())
+                table_results = wandb.Table(columns = table_columns)
+                fixed = Y.to('cpu').detach().numpy()
+                fixed = fixed[0,0,:,48,:]
+                moving = X.to('cpu').detach().numpy()
+                moving = moving[0,0,:,48,:]
+                warped = X_Y.to('cpu').detach().numpy()
+                warped = warped[0,0,:,48,:]
+                
+                target_fixed = Y_label
+                target_fixed = target_fixed[:,48,:]
+                mask_fixed = wandb.Image(fixed, masks={
+                            "predictions": {
+                                "mask_data": target_fixed
+                                
+                            }
+                            })
+                warped_seg = X_Y_label
+                warped_seg = X_Y_label[:,48,:]
 
-                    mask_warped = wandb.Image(warped, masks={
-                                "predictions": {
-                                    "mask_data": warped_seg
-                                    
-                                }
-                                })
+                mask_warped = wandb.Image(warped, masks={
+                            "predictions": {
+                                "mask_data": warped_seg
+                                
+                            }
+                            })
 
-                    # target_moving = X_label.to('cpu').detach().numpy()
-                    # target_moving = X_label[0,:,119,:]
-                    flow_x = F_X_Y[0,0,:,48,:].to('cpu').detach().numpy()
-                    flow_y = F_X_Y[0,1,:,48,:].to('cpu').detach().numpy()
-                    
-                    table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
-                    # Varsha
-                    test_data_at.add(table_results, "predictions")
-                    wandb.run.log_artifact(test_data_at) 
+                # target_moving = X_label.to('cpu').detach().numpy()
+                # target_moving = X_label[0,:,119,:]
+                flow_x = F_X_Y[0,0,:,48,:].to('cpu').detach().numpy()
+                flow_y = F_X_Y[0,1,:,48,:].to('cpu').detach().numpy()
+                
+                table_results.add_data(wandb.Image(moving), wandb.Image(fixed),wandb.Image(warped),wandb.Image(flow_x), wandb.Image(flow_y), mask_warped ,mask_fixed, dice_score)
+                # Varsha
+                test_data_at.add(table_results, "predictions")
+                wandb.run.log_artifact(test_data_at) 
             dice_mean = np.mean(dice_total)
             print("Dice mean: ", np.mean(dice_total))
             wandb.log({"dice" : np.mean(dice_total)} )
             
             if (best_mean_dice <= dice_mean):
                 best_mean_dice = dice_mean
-                modelname = model_dir + '/' + model_name + "stagelvl3_" + str(step) + '_best.pth'
+                modelname = model_dir + '/' + model_name + "dil3_stagelvl3_" + str(step) + '_best.pth'
                 torch.save(model.state_dict(), modelname)
-                np.save(model_dir + '/loss' + model_name + "stagelvl3_" + str(step) + '_best.npy', lossall)
+                np.save(model_dir + '/loss' + model_name + "dil3_stagelvl3_" + str(step) + '_best.npy', lossall)
                 
                 
         print("one epoch pass")
@@ -590,6 +591,6 @@ with open(log_dir, "a") as log:
     log.write("Validation Dice log for " + model_name[0:-1] + ":\n")
 
 range_flow = 0.4
-train_lvl1()
-train_lvl2()
+# train_lvl1()
+# train_lvl2()
 train_lvl3()

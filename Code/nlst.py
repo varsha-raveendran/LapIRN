@@ -10,6 +10,7 @@ import numpy as np
 import nibabel as nib
 import torchio as tio
 import torch.nn.functional as F
+import scipy.ndimage
 
 
 def image_norm(img):
@@ -36,7 +37,7 @@ class NLST(torch.utils.data.Dataset):
         self.H, self.W, self.D = self.shape
         self.downsampled = downsampled
         self.train = train
-        
+        self.structure=np.ones((3,3,3))
         self.is_norm = is_norm
         if self.train :
             self.type_data = 'training_paired_images'
@@ -85,6 +86,9 @@ class NLST(torch.utils.data.Dataset):
         fixed_mask=torch.from_numpy(nib.load(fix_path.replace('images', 'masks')).get_fdata()).float()
         
         moving_mask=torch.from_numpy(nib.load(mov_path.replace('images', 'masks')).get_fdata()).float()
+        
+        
+        
         fixed_kp =  0
         moving_kp = 0
         if not self.train:
@@ -95,15 +99,24 @@ class NLST(torch.utils.data.Dataset):
             fixed_kp=np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
             moving_kp=np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
         
-        if self.masked and not self.downsampled:           
+        if self.masked and not self.downsampled: 
+            fixed_mask = torch.from_numpy(scipy.ndimage.binary_dilation(fixed_mask,self.structure.astype(float)))
+            moving_mask = torch.from_numpy(scipy.ndimage.binary_dilation(moving_mask,self.structure.astype(float)))          
             fixed_img = fixed_img * fixed_mask
             moving_img = moving_img * moving_mask
+            
+        # else:
+        #     fixed_mask = torch.from_numpy(scipy.ndimage.binary_dilation(fixed_mask,self.structure.astype(float)))
+        #     moving_mask = torch.from_numpy(scipy.ndimage.binary_dilation(moving_mask,self.structure.astype(float)))
    
         if self.downsampled:
             fixed_img=F.interpolate(fixed_img.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='trilinear').squeeze()
             moving_img=F.interpolate(moving_img.view(1,1,self.H,self.W,self.D), size=(self.H//2,self.W//2,self.D//2), mode='trilinear').squeeze()
             fixed_mask=F.interpolate(fixed_mask.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='nearest').squeeze()
             moving_mask=F.interpolate(moving_mask.view(1,1,self.H,self.W,self.D),size=(self.H//2,self.W//2,self.D//2),mode='nearest').squeeze()
+            fixed_mask = torch.from_numpy(scipy.ndimage.binary_dilation(fixed_mask,self.structure.astype(float)))
+            moving_mask = torch.from_numpy(scipy.ndimage.binary_dilation(moving_mask,self.structure.astype(float)))
+            
             if self.masked:
                 fixed_img = fixed_img * fixed_mask
                 moving_img = moving_img * moving_mask
@@ -111,11 +124,12 @@ class NLST(torch.utils.data.Dataset):
                 fixed_kp=np.genfromtxt(fix_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
                 moving_kp=np.genfromtxt(mov_path.replace('images','keypoints').replace('nii.gz','csv'),delimiter=',')
   
-            
+        # fixed_mask = torch.from_numpy(scipy.ndimage.binary_dilation(fixed_mask,self.structure.astype(float)))
+        # moving_mask = torch.from_numpy(scipy.ndimage.binary_dilation(moving_mask,self.structure.astype(float)))
         fixed_img = fixed_img.unsqueeze(0)
         moving_img = moving_img.unsqueeze(0)
-        fixed_mask = fixed_mask.unsqueeze(0)
-        moving_mask = moving_mask.unsqueeze(0)
+        fixed_mask = fixed_mask.unsqueeze(0).float()
+        moving_mask = moving_mask.unsqueeze(0).float()
                                       
         shape = fixed_img.shape[1:-1]
         
